@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda *)",
+      "Bash(uv *)",
+      "Bash(pip install *)",
+      "Bash(CL=/std:c++17 uv pip install editdistance==0.8.1)",
+      "Bash(.venv/Scripts/python.exe -c \"from funasr import AutoModel; AutoModel\\(model='iic/SenseVoiceSmall'\\)\")",
+      "Bash(../.venv/Scripts/python.exe main.py)",
+      "Bash(HF_ENDPOINT=https://hf-mirror.com ../.venv/Scripts/python.exe main.py)",
+      "Bash(git check-ignore *)"
+    ]
+  }
+}
