@@ -3,8 +3,9 @@ import sounddevice as sd
 
 
 class AudioRecorder:
-    def __init__(self, samplerate=16000):
+    def __init__(self, samplerate=16000, on_chunk=None):
         self.samplerate = samplerate
+        self.on_chunk = on_chunk  # callback(bytes) for each 40ms PCM chunk
         self._chunks = []
         self._recording = False
         self._stream = None
@@ -13,7 +14,10 @@ class AudioRecorder:
         if status:
             print(f"Audio warning: {status}")
         if self._recording:
-            self._chunks.append(indata.copy())
+            data = indata.copy()
+            self._chunks.append(data)
+            if self.on_chunk:
+                self.on_chunk(data)
 
     def start(self):
         self._chunks = []
@@ -21,6 +25,7 @@ class AudioRecorder:
         self._stream = sd.InputStream(
             samplerate=self.samplerate,
             channels=1,
+            blocksize=640,  # exactly 40ms per callback at 16kHz
             callback=self._callback,
             dtype="int16",
         )
