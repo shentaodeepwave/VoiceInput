@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import sys
 import time
 from datetime import datetime
@@ -109,6 +110,9 @@ def on_press(key):
 
 def main():
     global _engine, _log_file
+
+    # Handle Ctrl+C
+    signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
 
     # Create logs directory and timestamped log file
     log_dir = Path(__file__).parent.parent / "logs"

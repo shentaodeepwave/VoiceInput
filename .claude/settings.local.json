@@ -10,7 +10,10 @@
       "Bash(HF_ENDPOINT=https://hf-mirror.com ../.venv/Scripts/python.exe main.py)",
       "Bash(git check-ignore *)",
       "WebFetch(domain:www.xfyun.cn)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(../.venv/Scripts/python.exe app.py)",
+      "Bash(../.venv/Scripts/python.exe -c \"import sys; print\\('start'\\); from PySide6.QtWidgets import QApplication; print\\('ok'\\)\")",
+      "Bash(../.venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

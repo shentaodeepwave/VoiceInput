@@ -160,7 +160,7 @@ class XfyunStreamingSession:
                     self.on_partial(text, False, is_segment_final, seg_id)
 
 
-def _load_config():
+def load_config():
     config_path = Path(__file__).parent / "config.yaml"
 
     if config_path.exists():
@@ -192,7 +192,7 @@ class ASREngine:
     """Convenience wrapper that loads config and creates streaming sessions."""
 
     def __init__(self, model_path=None):
-        self._app_id, self._key_id, self._key_secret = _load_config()
+        self._app_id, self._key_id, self._key_secret = load_config()
 
     def create_session(self, on_partial=None, on_log=None):
         return XfyunStreamingSession(
