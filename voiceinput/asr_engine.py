@@ -68,11 +68,13 @@ class XfyunStreamingSession:
         self._ws = None
         self._sid = None
         self._running = False
+        self._closed = False
         self._final_text = ""
         self._final_event = threading.Event()
         self._recv_thread = None
         self._send_failed = False
         self._segments: dict[int, str] = {}
+        self._lock = threading.Lock()
 
     @property
     def is_send_failed(self) -> bool:
@@ -91,37 +93,63 @@ class XfyunStreamingSession:
         self._recv_thread.start()
 
     def feed(self, chunk: np.ndarray):
-        if self._ws and not self._send_failed:
-            try:
-                self._ws.send_binary(chunk.tobytes())
-            except Exception:
-                self._send_failed = True
-                if self.on_error:
-                    self.on_error("网络中断")
+        if self._closed:
+            return
+        with self._lock:
+            if self._ws and not self._send_failed:
+                try:
+                    self._ws.send_binary(chunk.tobytes())
+                except Exception:
+                    self._send_failed = True
+                    if self.on_error:
+                        self.on_error("网络中断")
 
     def finish(self) -> str:
-        end_msg = {"end": True, "sessionId": self._sid}
-        if not self._send_failed:
-            try:
-                self._ws.send(json.dumps(end_msg))
-            except Exception:
-                pass
+        if self._closed:
+            return self._final_text
+
+        with self._lock:
+            if not self._send_failed and self._ws:
+                end_msg = {"end": True, "sessionId": self._sid}
+                try:
+                    self._ws.send(json.dumps(end_msg))
+                except Exception:
+                    pass
 
         self._final_event.wait(timeout=5)
         self._running = False
 
+        # Close ws first to unblock receiver thread
+        with self._lock:
+            self._closed = True
+            if self._ws:
+                try:
+                    self._ws.close()
+                except Exception:
+                    pass
+
         if self._recv_thread:
-            self._recv_thread.join(timeout=2)
-        self._ws.close()
+            self._recv_thread.join(timeout=3)
         return self._final_text
 
+    def cancel(self):
+        """Close without sending end marker (for short recordings)."""
+        self._running = False
+        self._closed = True
+        with self._lock:
+            if self._ws:
+                try:
+                    self._ws.close()
+                except Exception:
+                    pass
+        if self._recv_thread:
+            self._recv_thread.join(timeout=2)
+
     def _receiver(self):
-        while True:
+        while self._running:
             try:
                 msg = json.loads(self._ws.recv())
             except websocket.WebSocketTimeoutException:
-                if not self._running and self._final_text:
-                    break
                 continue
             except Exception:
                 if self._running and self.on_error:
@@ -146,7 +174,9 @@ class XfyunStreamingSession:
                     self._final_event.set()
                     if self.on_partial:
                         self.on_partial(self._final_text, True, False, -1)
-                elif text and self.on_partial:
+                    break
+
+                if text and self.on_partial:
                     is_segment_final = st_type == "0"
                     self.on_partial(text, False, is_segment_final, seg_id)
 

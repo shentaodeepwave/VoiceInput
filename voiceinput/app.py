@@ -4,7 +4,6 @@ from enum import Enum, auto
 
 import pyperclip
 import keyboard as kb
-from pynput.keyboard import Controller as KbController, Key as KbKey
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QPoint
 from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon
 from PySide6.QtWidgets import (
@@ -38,60 +37,14 @@ def _make_tray_icon(recording: bool = False) -> QIcon:
     px.fill(Qt.transparent)
     p = QPainter(px)
     p.setRenderHint(QPainter.Antialiasing)
-    c = QColor("#F44336") if recording else QColor("#4CAF50")
-    p.setBrush(QBrush(c))
+    if recording:
+        p.setBrush(QBrush(QColor("#FF4444")))
+    else:
+        p.setBrush(QBrush(QColor("#888888")))
     p.setPen(Qt.NoPen)
     p.drawEllipse(QPoint(16, 16), 8, 8)
     p.end()
     return QIcon(px)
-
-
-class LiveTyper:
-    """Incremental typing with committed/pending segment tracking.
-
-    Committed text is locked — previous segments that won't be backspaced.
-    Pending text is the current segment's partial, which can be corrected
-    as the ASR refines its prediction.
-    """
-
-    def __init__(self):
-        self._committed = ""
-        self._pending = ""
-
-    @property
-    def full_text(self) -> str:
-        return self._committed + self._pending
-
-    def update(self, text: str):
-        """Replace the pending partial with new text."""
-        if text == self._pending:
-            return
-
-        # Backspace old pending (only the pending part)
-        for _ in range(len(self._pending)):
-            kb.press_and_release("backspace")
-            time.sleep(0.002)
-
-        # Type new pending
-        if text:
-            kb.write(text)
-
-        self._pending = text
-
-    def commit_segment(self, text: str):
-        """Lock current pending as committed (segment is final)."""
-        # The pending text is already typed, just move it to committed
-        self._committed += text
-        self._pending = ""
-
-    def reset(self):
-        """Backspace all typed text (committed + pending)."""
-        total = len(self._committed) + len(self._pending)
-        for _ in range(total):
-            kb.press_and_release("backspace")
-            time.sleep(0.002)
-        self._committed = ""
-        self._pending = ""
 
 
 class VoiceInputApp(QObject):
@@ -101,7 +54,7 @@ class VoiceInputApp(QObject):
         self._config = ConfigManager()
         self._engine = ASREngine(self._config.data)
         self._bridge = AppBridge()
-        self._typer = LiveTyper()
+        self._accumulated_text = ""
         self._state = State.IDLE
         self._recorder: AudioRecorder | None = None
         self._session = None
@@ -238,9 +191,11 @@ class VoiceInputApp(QObject):
             self._session.start()
         except Exception as e:
             self._show_error(f"连接失败: {e}")
+            self._session = None
             return
 
         self._state = State.RECORDING
+        self._accumulated_text = ""
         self._start_ts = time.perf_counter()
 
         # VAD
@@ -253,12 +208,13 @@ class VoiceInputApp(QObject):
         self._recorder = AudioRecorder(on_chunk=self._on_chunk)
         self._recorder.start()
 
-        # Window
+        # Window — bring to front
         self._window.set_recording(True)
         self._window.clear_error()
         self._window.set_text("")
         self._window.show()
-        self._window._opacity_effect.setOpacity(1.0)
+        self._window.raise_()
+        self._window.setWindowOpacity(1.0)
 
         # Tray
         self._tray.setIcon(_make_tray_icon(True))
@@ -272,7 +228,10 @@ class VoiceInputApp(QObject):
         self._state = State.RECOGNIZING
         duration = self._recorder.duration if self._recorder else 0
 
-        self._recorder.stop()
+        try:
+            self._recorder.stop()
+        except Exception:
+            pass
         self._recorder = None
         self._vad = None
 
@@ -284,8 +243,9 @@ class VoiceInputApp(QObject):
         self._rebuild_tray_menu()
 
         if duration < 0.5:
-            self._typer.reset()
-            self._cleanup_session()
+            if self._session:
+                self._session.cancel()
+                self._session = None
             self._transition_to_idle()
             return
 
@@ -295,8 +255,8 @@ class VoiceInputApp(QObject):
         except Exception:
             final = ""
 
-        self._typer.reset()
         if final.strip():
+            self._accumulated_text = final
             self._type_text(final)
 
         self._cleanup_session()
@@ -306,15 +266,11 @@ class VoiceInputApp(QObject):
         self._state = State.IDLE
         if self._window:
             self._window.set_recording(False)
-            # Update window with final accumulated text
-            text = self._typer.full_text
-            if text:
-                self._window.set_text(text)
 
     def _cleanup_session(self):
         if self._session:
             try:
-                self._session = None
+                self._session.cancel()
             except Exception:
                 pass
         self._session = None
@@ -342,28 +298,33 @@ class VoiceInputApp(QObject):
         if self._state not in (State.RECORDING, State.RECOGNIZING):
             return
         if is_seg:
-            # Segment is final — lock it as committed
-            self._typer.commit_segment(text)
-        else:
-            # In-progress partial — update pending
-            self._typer.update(text)
+            self._accumulated_text += text
+        display = self._accumulated_text if is_seg else self._accumulated_text + text
         if self._window:
-            self._window.set_text(self._typer.full_text)
+            self._window.set_text(display)
 
     def _on_final(self, text: str):
+        self._accumulated_text = text
         if self._window and text.strip():
             self._window.set_text(text)
 
     def _on_error(self, msg: str):
         if self._state == State.RECORDING:
-            if self._recorder:
-                self._recorder.stop()
+            try:
+                if self._recorder:
+                    self._recorder.stop()
+                    self._recorder = None
+            except Exception:
                 self._recorder = None
             self._vad = None
             self._cleanup_session()
 
-        self._typer.reset()
+        self._accumulated_text = ""
         self._show_error("识别中断")
+
+        self._tray.setIcon(_make_tray_icon(False))
+        self._tray.setToolTip("VoiceInput — 语音输入法")
+        self._rebuild_tray_menu()
         self._state = State.IDLE
 
     def _on_silence(self):
@@ -373,14 +334,22 @@ class VoiceInputApp(QObject):
     # ── Typing ──────────────────────────────────────────────────
     @staticmethod
     def _type_text(text: str):
+        import ctypes
+        from ctypes import wintypes
+
         old = pyperclip.paste()
         pyperclip.copy(text)
         time.sleep(0.05)
-        ctrl = KbController()
-        ctrl.press(KbKey.ctrl)
-        ctrl.press("v")
-        ctrl.release("v")
-        ctrl.release(KbKey.ctrl)
+
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+        KEYEVENTF_KEYUP = 0x0002
+
+        user32 = ctypes.windll.user32
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_V, 0, 0, 0)
+        user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
         def restore():
             time.sleep(0.3)
@@ -411,8 +380,11 @@ class VoiceInputApp(QObject):
     def _on_window_closed(self):
         self._save_window_pos()
         if self._state == State.RECORDING:
-            if self._recorder:
-                self._recorder.stop()
+            try:
+                if self._recorder:
+                    self._recorder.stop()
+            except Exception:
+                pass
             self._recorder = None
             self._cleanup_session()
             self._state = State.IDLE
@@ -434,7 +406,7 @@ class VoiceInputApp(QObject):
         menu.addSeparator()
         menu.addAction("设置...", self._show_settings)
         menu.addSeparator()
-        menu.addAction("退出", self._quit)
+        menu.addAction("关闭程序", self._quit)
         self._tray.setContextMenu(menu)
 
     # ── Settings ────────────────────────────────────────────────

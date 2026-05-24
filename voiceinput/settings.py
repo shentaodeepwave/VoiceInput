@@ -1,9 +1,10 @@
 import keyboard
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QFormLayout, QLineEdit, QPushButton, QComboBox, QCheckBox,
-    QDoubleSpinBox, QLabel, QDialogButtonBox, QMessageBox,
+    QLabel, QDialogButtonBox, QMessageBox,
 )
 
 from config import ConfigManager
@@ -153,11 +154,9 @@ class SettingsDialog(QDialog):
         self._vad_enabled.setChecked(self._cfg.vad_enabled)
         form.addRow(self._vad_enabled)
 
-        self._vad_seconds = QDoubleSpinBox()
-        self._vad_seconds.setRange(0.5, 10.0)
-        self._vad_seconds.setSingleStep(0.5)
-        self._vad_seconds.setValue(self._cfg.vad_silence_seconds)
-        self._vad_seconds.setSuffix(" 秒")
+        self._vad_seconds = QLineEdit(str(self._cfg.vad_silence_seconds))
+        self._vad_seconds.setValidator(QDoubleValidator(0.1, 9999.0, 1))
+        self._vad_seconds.setFixedWidth(80)
         form.addRow("静音超时时长:", self._vad_seconds)
 
         hint = QLabel("检测到连续静音超过设定时长后，自动停止录音。")
@@ -233,6 +232,9 @@ class SettingsDialog(QDialog):
         cfg.hotkey = self._hotkey_widget.value()
         cfg.tap_mode = self._mode_combo.currentData()
         cfg.vad_enabled = self._vad_enabled.isChecked()
-        cfg.vad_silence_seconds = self._vad_seconds.value()
+        try:
+            cfg.vad_silence_seconds = float(self._vad_seconds.text() or "1.5")
+        except ValueError:
+            cfg.vad_silence_seconds = 1.5
         self._config.save()
         self.accept()
