@@ -80,7 +80,8 @@ class XfyunStreamingSession:
         self._final_event = threading.Event()
         self._recv_thread = None
         self._send_failed = False
-        self._segments = {}  # seg_id -> final text for that segment
+        self._segments = {}            # seg_id -> final text (type=0)
+        self._intermediate_texts = {}  # seg_id -> latest intermediate text (type=1)
 
     def start(self):
         url = _build_url(self._app_id, self._key_id, self._key_secret)
@@ -122,6 +123,18 @@ class XfyunStreamingSession:
         self._ws.close()
         return self._final_text
 
+    def _build_accumulated(self):
+        """Finalized segments + latest intermediate (if newer than finalized)."""
+        parts = []
+        for sid in sorted(self._segments.keys()):
+            parts.append(self._segments[sid])
+        if self._intermediate_texts:
+            max_final = max(self._segments.keys()) if self._segments else -1
+            latest_sid = max(self._intermediate_texts.keys())
+            if latest_sid > max_final:
+                parts.append(self._intermediate_texts[latest_sid])
+        return "".join(parts)
+
     def _receiver(self):
         while True:
             try:
@@ -143,9 +156,11 @@ class XfyunStreamingSession:
                 st_type = data.get("cn", {}).get("st", {}).get("type", "1")
                 is_last = data.get("ls", False)
 
-                # Accumulate final (type=0) results per segment
                 if st_type == "0" and text:
                     self._segments[seg_id] = text
+                    self._intermediate_texts.clear()
+                elif st_type == "1" and text:
+                    self._intermediate_texts[seg_id] = text
 
                 if is_last:
                     parts = []
@@ -155,9 +170,11 @@ class XfyunStreamingSession:
                     self._final_event.set()
                     if self.on_partial:
                         self.on_partial(self._final_text, True, False, -1)
-                elif text and self.on_partial:
-                    is_segment_final = st_type == "0"
-                    self.on_partial(text, False, is_segment_final, seg_id)
+                else:
+                    live = self._build_accumulated()
+                    if live and self.on_partial:
+                        is_segment_final = st_type == "0"
+                        self.on_partial(live, False, is_segment_final, seg_id)
 
 
 def load_config():

@@ -1,4 +1,6 @@
 """VoiceInput GUI — 浮窗 + 系统托盘语音输入法."""
+import ctypes
+from ctypes import wintypes
 import signal
 import sys
 import time
@@ -9,7 +11,7 @@ import pyperclip
 import keyboard as kb
 from pynput.keyboard import Controller as KbController, Key as KbKey
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QPoint
-from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon, QMouseEvent
+from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon, QMouseEvent, QCursor
 from PySide6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QWidget,
     QVBoxLayout, QLabel, QHBoxLayout,
@@ -21,6 +23,37 @@ from asr_engine import ASREngine, load_config
 
 HOTKEY = "right ctrl"
 HOTKEY_NAME = "右 Ctrl"
+
+
+def get_caret_screen_pos():
+    """Return (x, y) screen coordinates of the text cursor, or None."""
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    thread_id = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("hwndActive", wintypes.HWND),
+            ("hwndFocus", wintypes.HWND),
+            ("hwndCapture", wintypes.HWND),
+            ("hwndMenuOwner", wintypes.HWND),
+            ("hwndMoveSize", wintypes.HWND),
+            ("hwndCaret", wintypes.HWND),
+            ("rcCaret", wintypes.RECT),
+        ]
+
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if ctypes.windll.user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)):
+        rc = info.rcCaret
+        if rc.left != 0 or rc.top != 0:
+            pt = wintypes.POINT(rc.left, rc.bottom)
+            ctypes.windll.user32.ClientToScreen(
+                info.hwndCaret or hwnd, ctypes.byref(pt)
+            )
+            return pt.x, pt.y
+    return None
 
 
 # ── tray icon ────────────────────────────────────────────────────
@@ -42,7 +75,8 @@ class SpeechBridge(QObject):
     partial = Signal(str)
     final = Signal(str)
     error = Signal(str)
-    toggle = Signal()  # hotkey → main thread
+    toggle = Signal()
+    do_type = Signal()
 
 
 # ── floating overlay ───────────────────────────────────────────────
@@ -59,7 +93,7 @@ class FloatingWindow(QWidget):
         self.setFocusPolicy(Qt.NoFocus)
         self._drag_pos: QPoint | None = None
         self._setup_ui()
-        self._place_bottom_center()
+        self.place_near_cursor()
 
     def _setup_ui(self):
         self.setFixedWidth(620)
@@ -99,7 +133,7 @@ class FloatingWindow(QWidget):
         )
         layout.addWidget(self._text, 1)
 
-        self._hint = QLabel(f"按 {HOTKEY_NAME} 停止")
+        self._hint = QLabel(f"按 {HOTKEY_NAME} 或 Enter 输入文字")
         self._hint.setStyleSheet("color: #444; font-size: 11px;")
         layout.addWidget(self._hint, alignment=Qt.AlignRight)
 
@@ -116,7 +150,7 @@ class FloatingWindow(QWidget):
             self._status.setText("正在录音...")
         else:
             self._dot.setStyleSheet("color: #ffaa00; font-size: 10px;")
-            self._status.setText("识别中...")
+            self._status.setText("识别完成")
 
     def _adjust_height(self):
         h = self._text.sizeHint().height() + 90
@@ -124,10 +158,16 @@ class FloatingWindow(QWidget):
         self._container.resize(self.width(), h)
         self.setFixedHeight(h)
 
-    def _place_bottom_center(self):
+    def place_near_cursor(self):
+        pos = get_caret_screen_pos()
+        if pos is None:
+            pos = QCursor.pos().toTuple()
         screen = QApplication.primaryScreen().availableGeometry()
-        x = (screen.width() - self.width()) // 2
-        y = screen.bottom() - self.height() - 60
+        x = pos[0] - self.width() // 2
+        x = max(screen.left(), min(x, screen.right() - self.width()))
+        y = pos[1] + 24
+        if y + self.height() > screen.bottom():
+            y = pos[1] - self.height() - 8
         self.move(x, y)
 
     def mousePressEvent(self, e: QMouseEvent):
@@ -209,11 +249,13 @@ class VoiceInputApp(QObject):
         self._start_ts = 0
         self._toggle_action = None
         self._last_hotkey_ts = 0
+        self._pending_text = ""
 
         self._bridge.partial.connect(self._on_partial)
         self._bridge.final.connect(self._on_final)
         self._bridge.error.connect(self._on_error)
         self._bridge.toggle.connect(self._toggle_recording)
+        self._bridge.do_type.connect(self._type_pending)
 
         # tray
         self._tray = QSystemTrayIcon(_make_tray_icon(False))
@@ -223,6 +265,7 @@ class VoiceInputApp(QObject):
 
         # hotkey — add_hotkey is more reliable with Qt than on_press_key
         kb.add_hotkey(HOTKEY, self._on_hotkey, suppress=False)
+        kb.on_press_key("enter", self._on_enter_hotkey, suppress=False)
 
         print(f"VoiceInput 已启动 — 按 {HOTKEY_NAME} 或右键托盘图标切换录音")
         self._tray.showMessage(
@@ -231,11 +274,6 @@ class VoiceInputApp(QObject):
             QSystemTrayIcon.Information,
             2000,
         )
-        # Test floating window
-        self._float_win = FloatingWindow()
-        self._float_win.set_text("VoiceInput 已就绪")
-        self._float_win.show()
-        QTimer.singleShot(2000, self._hide_floating)
 
     def _rebuild_tray_menu(self):
         menu = QMenu()
@@ -256,8 +294,22 @@ class VoiceInputApp(QObject):
         print(f"[DEBUG] 热键触发, recording={self._recording}")
         self._bridge.toggle.emit()
 
+    def _on_enter_hotkey(self, event=None):
+        if self._pending_text and not self._recording:
+            print("[DEBUG] Enter 触发输入")
+            self._bridge.do_type.emit()
+
+    def _type_pending(self):
+        if self._pending_text:
+            self._type_text(self._pending_text)
+            print(f"[DEBUG] 输入文字: {self._pending_text}")
+            self._pending_text = ""
+            self._hide_floating()
+
     def _toggle_recording(self):
         print(f"[DEBUG] _toggle_recording called, recording={self._recording}")
+        if self._pending_text and not self._recording:
+            self._type_pending()
         if not self._recording:
             self._start_recording()
         else:
@@ -315,10 +367,13 @@ class VoiceInputApp(QObject):
         self._tray.setToolTip("VoiceInput — 语音输入法")
 
         if final.strip():
-            self._type_text(final)
-            print(f"[DEBUG] 输入完成: {final}")
-
-        QTimer.singleShot(1500, self._hide_floating)
+            self._pending_text = final.strip()
+            if self._float_win:
+                self._float_win.set_text(self._pending_text)
+            print(f"[DEBUG] 识别完成: {self._pending_text}")
+        else:
+            self._pending_text = ""
+            QTimer.singleShot(800, self._hide_floating)
 
     def _hide_floating(self):
         if self._float_win and not self._recording:
@@ -352,19 +407,18 @@ class VoiceInputApp(QObject):
 
     @staticmethod
     def _type_text(text: str):
-        old = pyperclip.paste()
-        pyperclip.copy(text)
-        time.sleep(0.05)
-        ctrl = KbController()
-        ctrl.press(KbKey.ctrl)
-        ctrl.press("v")
-        ctrl.release("v")
-        ctrl.release(KbKey.ctrl)
-
-        def restore():
+        def _paste():
+            old = pyperclip.paste()
+            pyperclip.copy(text)
+            time.sleep(0.08)
+            ctrl = KbController()
+            ctrl.press(KbKey.ctrl)
+            ctrl.press("v")
+            ctrl.release("v")
+            ctrl.release(KbKey.ctrl)
             time.sleep(0.3)
             pyperclip.copy(old)
-        threading.Thread(target=restore, daemon=True).start()
+        threading.Thread(target=_paste, daemon=True).start()
 
     def _show_settings(self):
         dlg = SettingsDialog()
