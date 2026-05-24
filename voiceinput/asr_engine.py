@@ -18,7 +18,7 @@ import yaml
 XF_URL = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"
 
 
-def _build_url(app_id, access_key_id, access_key_secret):
+def _build_url(app_id, access_key_id, access_key_secret, vad_eos=2000):
     tz = timezone(timedelta(hours=8))
     utc_str = datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S+0800")
 
@@ -30,6 +30,7 @@ def _build_url(app_id, access_key_id, access_key_secret):
         "samplerate": "16000",
         "utc": utc_str,
         "uuid": uuid.uuid4().hex,
+        "vad_eos": str(vad_eos),
     }
 
     sorted_keys = sorted(params.keys())
@@ -66,10 +67,11 @@ class XfyunStreamingSession:
     """Real-time streaming ASR session — open once, feed chunks, get live results."""
 
     def __init__(self, app_id, access_key_id, access_key_secret,
-                 on_partial=None, on_log=None, on_error=None):
+                 on_partial=None, on_log=None, on_error=None, vad_eos=2000):
         self._app_id = app_id
         self._key_id = access_key_id
         self._key_secret = access_key_secret
+        self._vad_eos = vad_eos
         self.on_partial = on_partial
         self.on_log = on_log
         self.on_error = on_error
@@ -96,7 +98,7 @@ class XfyunStreamingSession:
 
     def _connect(self):
         try:
-            url = _build_url(self._app_id, self._key_id, self._key_secret)
+            url = _build_url(self._app_id, self._key_id, self._key_secret, self._vad_eos)
             ws = websocket.create_connection(url)
             ws.settimeout(0.5)
             handshake = json.loads(ws.recv())
@@ -251,9 +253,9 @@ class ASREngine:
     def __init__(self, model_path=None):
         self._app_id, self._key_id, self._key_secret = load_config()
 
-    def create_session(self, on_partial=None, on_log=None, on_error=None):
+    def create_session(self, on_partial=None, on_log=None, on_error=None, vad_eos=2000):
         return XfyunStreamingSession(
             self._app_id, self._key_id, self._key_secret,
             on_partial=on_partial, on_log=on_log,
-            on_error=on_error,
+            on_error=on_error, vad_eos=vad_eos,
         )
