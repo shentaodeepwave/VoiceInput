@@ -24,8 +24,8 @@
 ## 👥 团队分工
 | 角色 | 负责内容 |
 |------|----------|
-| [你的名字] - 产品经理 | 需求分析、PRD、UI 线框图、测试用例、演示脚本、文档撰写 |
-| [队友名字] - 开发工程师 | 音频采集、API 集成、VAD 实现、程序打包、性能优化 |
+| [WELT] - 产品经理 | 需求分析、PRD、UI 线框图、测试用例、演示脚本、文档撰写 |
+| [DeepWave] - 开发工程师 | 音频采集、API 集成、VAD 实现、程序打包、性能优化 |
 
 ## 🚀 快速开始
 
@@ -45,7 +45,7 @@ git clone [你的仓库地址]
 pip install -r requirements.txt
 
 # 配置 API 密钥
-# 将讯飞/百度的 AppID、APIKey 填入 config.json
+# 将讯飞大人的 AppID、APIKey 填入 config.json
 
 # 运行程序
 python main.py
