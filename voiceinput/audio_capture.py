@@ -31,6 +31,10 @@ class AudioRecorder:
         )
         self._stream.start()
 
+    @property
+    def duration(self) -> float:
+        return len(self._chunks) * 640 / self.samplerate
+
     def stop(self) -> np.ndarray:
         self._recording = False
         self._stream.stop()

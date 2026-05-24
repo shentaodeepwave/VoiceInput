@@ -1,35 +1,44 @@
-"""VoiceInput GUI — 浮窗 + 系统托盘语音输入法."""
-import signal
-import sys
 import time
 import threading
-from pathlib import Path
+from enum import Enum, auto
 
 import pyperclip
 import keyboard as kb
 from pynput.keyboard import Controller as KbController, Key as KbKey
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QPoint
-from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon, QMouseEvent
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QPoint
+from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QSystemTrayIcon, QMenu, QWidget,
-    QVBoxLayout, QLabel, QHBoxLayout,
-    QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QMessageBox,
+    QApplication, QSystemTrayIcon, QMenu, QMessageBox,
 )
 
 from audio_capture import AudioRecorder
-from asr_engine import ASREngine, load_config
+from asr_engine import ASREngine
+from config import ConfigManager
+from vad import VoiceActivityDetector
+from window import FloatingCardWindow
+from settings import SettingsDialog
 
-HOTKEY = "right ctrl"
-HOTKEY_NAME = "右 Ctrl"
+
+class State(Enum):
+    IDLE = auto()
+    RECORDING = auto()
+    RECOGNIZING = auto()
 
 
-# ── tray icon ────────────────────────────────────────────────────
+class AppBridge(QObject):
+    partial = Signal(str, bool)  # text, is_segment_final
+    final = Signal(str)
+    error = Signal(str)
+    silence = Signal()
+    toggle = Signal()
+
+
 def _make_tray_icon(recording: bool = False) -> QIcon:
     px = QPixmap(32, 32)
     px.fill(Qt.transparent)
     p = QPainter(px)
     p.setRenderHint(QPainter.Antialiasing)
-    c = QColor("#ff4444") if recording else QColor("#cccccc")
+    c = QColor("#F44336") if recording else QColor("#4CAF50")
     p.setBrush(QBrush(c))
     p.setPen(Qt.NoPen)
     p.drawEllipse(QPoint(16, 16), 8, 8)
@@ -37,319 +46,331 @@ def _make_tray_icon(recording: bool = False) -> QIcon:
     return QIcon(px)
 
 
-# ── bridge ─────────────────────────────────────────────────────────
-class SpeechBridge(QObject):
-    partial = Signal(str)
-    final = Signal(str)
-    error = Signal(str)
-    toggle = Signal()  # hotkey → main thread
+class LiveTyper:
+    """Incremental typing with committed/pending segment tracking.
 
-
-# ── floating overlay ───────────────────────────────────────────────
-class FloatingWindow(QWidget):
-    closed = Signal()
+    Committed text is locked — previous segments that won't be backspaced.
+    Pending text is the current segment's partial, which can be corrected
+    as the ASR refines its prediction.
+    """
 
     def __init__(self):
-        super().__init__()
-        self.setWindowFlags(
-            Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setFocusPolicy(Qt.NoFocus)
-        self._drag_pos: QPoint | None = None
-        self._setup_ui()
-        self._place_bottom_center()
+        self._committed = ""
+        self._pending = ""
 
-    def _setup_ui(self):
-        self.setFixedWidth(620)
-        self.setMinimumHeight(100)
-        self._container = QWidget(self)
-        self._container.setObjectName("c")
-        self._container.setStyleSheet("""
-            #c {
-                background: rgba(24, 24, 24, 0.94);
-                border-radius: 14px;
-                border: 1px solid rgba(255,255,255,0.08);
-            }
-        """)
-        layout = QVBoxLayout(self._container)
-        layout.setContentsMargins(22, 14, 22, 14)
-        layout.setSpacing(6)
+    @property
+    def full_text(self) -> str:
+        return self._committed + self._pending
 
-        hdr = QHBoxLayout()
-        self._dot = QLabel("⬤")
-        self._dot.setStyleSheet("color: #ff4444; font-size: 10px;")
-        self._status = QLabel("正在录音...")
-        self._status.setStyleSheet("color: #999; font-size: 12px;")
-        self._dur = QLabel("00:00")
-        self._dur.setStyleSheet("color: #555; font-size: 12px;")
-        hdr.addWidget(self._dot)
-        hdr.addWidget(self._status)
-        hdr.addStretch()
-        hdr.addWidget(self._dur)
-        layout.addLayout(hdr)
+    def update(self, text: str):
+        """Replace the pending partial with new text."""
+        if text == self._pending:
+            return
 
-        self._text = QLabel("")
-        self._text.setWordWrap(True)
-        self._text.setStyleSheet(
-            "color: #eee; font-size: 15px; "
-            "font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif; "
-            "padding: 6px 0; line-height: 1.5;"
-        )
-        layout.addWidget(self._text, 1)
+        # Backspace old pending (only the pending part)
+        for _ in range(len(self._pending)):
+            kb.press_and_release("backspace")
+            time.sleep(0.002)
 
-        self._hint = QLabel(f"按 {HOTKEY_NAME} 停止")
-        self._hint.setStyleSheet("color: #444; font-size: 11px;")
-        layout.addWidget(self._hint, alignment=Qt.AlignRight)
+        # Type new pending
+        if text:
+            kb.write(text)
 
-    def set_text(self, text: str):
-        self._text.setText(text)
-        self._adjust_height()
+        self._pending = text
 
-    def set_duration(self, seconds: int):
-        self._dur.setText(f"{seconds // 60:02d}:{seconds % 60:02d}")
+    def commit_segment(self, text: str):
+        """Lock current pending as committed (segment is final)."""
+        # The pending text is already typed, just move it to committed
+        self._committed += text
+        self._pending = ""
 
-    def set_recording(self, on: bool):
-        if on:
-            self._dot.setStyleSheet("color: #ff4444; font-size: 10px;")
-            self._status.setText("正在录音...")
-        else:
-            self._dot.setStyleSheet("color: #ffaa00; font-size: 10px;")
-            self._status.setText("识别中...")
-
-    def _adjust_height(self):
-        h = self._text.sizeHint().height() + 90
-        h = max(100, min(h, 400))
-        self._container.resize(self.width(), h)
-        self.setFixedHeight(h)
-
-    def _place_bottom_center(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        x = (screen.width() - self.width()) // 2
-        y = screen.bottom() - self.height() - 60
-        self.move(x, y)
-
-    def mousePressEvent(self, e: QMouseEvent):
-        if e.button() == Qt.LeftButton:
-            self._drag_pos = e.globalPosition().toPoint()
-
-    def mouseMoveEvent(self, e: QMouseEvent):
-        if self._drag_pos is not None:
-            delta = e.globalPosition().toPoint() - self._drag_pos
-            self.move(self.pos() + delta)
-            self._drag_pos = e.globalPosition().toPoint()
-
-    def mouseReleaseEvent(self, e: QMouseEvent):
-        self._drag_pos = None
-
-    def closeEvent(self, e):
-        self.closed.emit()
-        super().closeEvent(e)
+    def reset(self):
+        """Backspace all typed text (committed + pending)."""
+        total = len(self._committed) + len(self._pending)
+        for _ in range(total):
+            kb.press_and_release("backspace")
+            time.sleep(0.002)
+        self._committed = ""
+        self._pending = ""
 
 
-# ── settings dialog ────────────────────────────────────────────────
-class SettingsDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("设置 — VoiceInput")
-        self.setFixedSize(420, 200)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        cfg = load_config()
-        layout = QFormLayout(self)
-        layout.setSpacing(10)
-
-        self._app_id = QLineEdit(cfg[0])
-        self._key_id = QLineEdit(cfg[1])
-        self._key_secret = QLineEdit(cfg[2])
-        self._key_secret.setEchoMode(QLineEdit.Password)
-
-        layout.addRow("AppID:", self._app_id)
-        layout.addRow("APIKey:", self._key_id)
-        layout.addRow("APISecret:", self._key_secret)
-
-        hint = QLabel("从 https://console.xfyun.cn/ 获取")
-        hint.setStyleSheet("color: #888; font-size: 11px;")
-        layout.addRow(hint)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self._save)
-        btns.rejected.connect(self.reject)
-        layout.addRow(btns)
-
-    def _save(self):
-        import yaml
-        config_path = Path(__file__).parent / "config.yaml"
-        data = {
-            "xfyun": {
-                "app_id": self._app_id.text().strip(),
-                "access_key_id": self._key_id.text().strip(),
-                "access_key_secret": self._key_secret.text().strip(),
-            }
-        }
-        with open(config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-        self.accept()
-
-
-# ── main app ───────────────────────────────────────────────────────
 class VoiceInputApp(QObject):
     def __init__(self):
         super().__init__()
         self._app = QApplication.instance()
-        self._engine = ASREngine()
-        self._bridge = SpeechBridge()
-        self._recording = False
+        self._config = ConfigManager()
+        self._engine = ASREngine(self._config.data)
+        self._bridge = AppBridge()
+        self._typer = LiveTyper()
+        self._state = State.IDLE
         self._recorder: AudioRecorder | None = None
         self._session = None
-        self._float_win: FloatingWindow | None = None
-        self._duration_timer = QTimer(self)
-        self._duration_timer.timeout.connect(self._tick_duration)
+        self._vad: VoiceActivityDetector | None = None
+        self._window: FloatingCardWindow | None = None
         self._start_ts = 0
-        self._toggle_action = None
-        self._last_hotkey_ts = 0
+        self._last_toggle_ts = 0
+        self._hotkey_ids = []
 
+        # Signal wiring
         self._bridge.partial.connect(self._on_partial)
         self._bridge.final.connect(self._on_final)
         self._bridge.error.connect(self._on_error)
-        self._bridge.toggle.connect(self._toggle_recording)
+        self._bridge.silence.connect(self._on_silence)
+        self._bridge.toggle.connect(self._on_toggle)
 
-        # tray
+        # System tray
         self._tray = QSystemTrayIcon(_make_tray_icon(False))
         self._tray.setToolTip("VoiceInput — 语音输入法")
         self._rebuild_tray_menu()
         self._tray.show()
 
-        # hotkey — add_hotkey is more reliable with Qt than on_press_key
-        kb.add_hotkey(HOTKEY, self._on_hotkey, suppress=False)
+        # Hotkey
+        self._bind_hotkey()
 
-        print(f"VoiceInput 已启动 — 按 {HOTKEY_NAME} 或右键托盘图标切换录音")
-        self._tray.showMessage(
-            "VoiceInput",
-            f"已启动 — 按 {HOTKEY_NAME} 或右键托盘切换录音",
-            QSystemTrayIcon.Information,
-            2000,
+        # Show window on startup
+        self._window = FloatingCardWindow(self._config.data.hotkey)
+        self._window.mic_clicked.connect(self._bridge.toggle.emit)
+        self._window.closed.connect(self._on_window_closed)
+        self._window.destroyed.connect(lambda: setattr(self, "_window", None))
+        self._window.show_with_fade()
+        self._place_window()
+
+        # First-launch mic check
+        if not self._config.data.mic_permission_granted:
+            QTimer.singleShot(800, self._check_mic_on_startup)
+
+    # ── Mic Permission ──────────────────────────────────────────
+    def _check_mic_on_startup(self):
+        result = QMessageBox.question(
+            None, "麦克风权限",
+            "VoiceInput 需要使用麦克风进行语音输入。\n\n"
+            "是否允许使用麦克风？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
-        # Test floating window
-        self._float_win = FloatingWindow()
-        self._float_win.set_text("VoiceInput 已就绪")
-        self._float_win.show()
-        QTimer.singleShot(2000, self._hide_floating)
+        if result == QMessageBox.Yes:
+            ok = self._test_mic()
+            if ok:
+                self._config.data.mic_permission_granted = True
+                self._config.save()
+            else:
+                self._tray.showMessage(
+                    "VoiceInput", "麦克风不可用，请在设置中重新测试",
+                    QSystemTrayIcon.Warning, 3000,
+                )
+        else:
+            self._tray.showMessage(
+                "VoiceInput", "已拒绝麦克风权限，录音功能不可用",
+                QSystemTrayIcon.Warning, 3000,
+            )
 
-    def _rebuild_tray_menu(self):
-        menu = QMenu()
-        label = "⬤ 停止录音" if self._recording else "⬤ 开始录音"
-        self._toggle_action = menu.addAction(label, self._toggle_recording)
-        menu.addSeparator()
-        menu.addAction("设置...", self._show_settings)
-        menu.addSeparator()
-        menu.addAction("退出", self._quit)
-        self._tray.setContextMenu(menu)
+    def _test_mic(self) -> bool:
+        import sounddevice as sd
+        try:
+            stream = sd.InputStream(samplerate=16000, channels=1)
+            stream.start()
+            stream.stop()
+            stream.close()
+            return True
+        except Exception:
+            return False
 
-    # ── hotkey ──────────────────────────────────────────────────
-    def _on_hotkey(self):
-        now = time.time()
-        if now - self._last_hotkey_ts < 0.8:
+    # ── Hotkey ──────────────────────────────────────────────────
+    def _bind_hotkey(self):
+        self._unbind_hotkey()
+        hotkey = self._config.data.hotkey
+        if not hotkey:
             return
-        self._last_hotkey_ts = now
-        print(f"[DEBUG] 热键触发, recording={self._recording}")
+
+        if self._config.data.tap_mode:
+            hid = kb.add_hotkey(hotkey, self._on_hotkey_trigger, suppress=False)
+            self._hotkey_ids = [("add_hotkey", hid)]
+        else:
+            hid1 = kb.on_press(self._on_hold_press, suppress=False)
+            hid2 = kb.on_release(self._on_hold_release, suppress=False)
+            self._hotkey_ids = [("on_press", hid1), ("on_release", hid2)]
+
+    def _unbind_hotkey(self):
+        for kind, hid in self._hotkey_ids:
+            try:
+                kb.remove_hotkey(hid) if kind == "add_hotkey" else kb.unhook(hid)
+            except Exception:
+                pass
+        self._hotkey_ids = []
+
+    def rebind_hotkey(self):
+        self._bind_hotkey()
+
+    def _on_hotkey_trigger(self):
         self._bridge.toggle.emit()
 
-    def _toggle_recording(self):
-        print(f"[DEBUG] _toggle_recording called, recording={self._recording}")
-        if not self._recording:
+    def _on_hold_press(self, e):
+        if e.name == self._config.data.hotkey and self._state == State.IDLE:
+            self._bridge.toggle.emit()
+
+    def _on_hold_release(self, e):
+        if e.name == self._config.data.hotkey and self._state == State.RECORDING:
+            self._bridge.toggle.emit()
+
+    # ── State Machine ───────────────────────────────────────────
+    def _on_toggle(self):
+        now = time.time()
+        if now - self._last_toggle_ts < 0.4:
+            return
+        self._last_toggle_ts = now
+
+        if self._state == State.IDLE:
             self._start_recording()
-        else:
+        elif self._state == State.RECORDING:
             self._stop_recording()
-        self._rebuild_tray_menu()
 
     def _start_recording(self):
-        if self._float_win:
-            self._float_win.close()
-            self._float_win = None
+        if self._state != State.IDLE:
+            return
+
+        self._engine = ASREngine(self._config.data)
+
         try:
             self._session = self._engine.create_session(
-                on_partial=self._on_asr_partial,
-                on_log=None,
+                on_partial=self._on_asr_result,
+                on_error=self._on_asr_error,
             )
             self._session.start()
         except Exception as e:
-            QMessageBox.warning(None, "错误", f"连接失败: {e}")
+            self._show_error(f"连接失败: {e}")
             return
 
-        self._recording = True
-        self._start_ts = int(time.perf_counter())
+        self._state = State.RECORDING
+        self._start_ts = time.perf_counter()
 
-        self._float_win = FloatingWindow()
-        self._float_win.show()
-        self._float_win.set_recording(True)
-        self._duration_timer.start(200)
+        # VAD
+        self._vad = VoiceActivityDetector(
+            silence_seconds=self._config.data.vad_silence_seconds,
+        )
+        self._vad.enabled = self._config.data.vad_enabled
 
-        self._recorder = AudioRecorder(on_chunk=self._session.feed)
+        # Recorder
+        self._recorder = AudioRecorder(on_chunk=self._on_chunk)
         self._recorder.start()
 
+        # Window
+        self._window.set_recording(True)
+        self._window.clear_error()
+        self._window.set_text("")
+        self._window.show()
+        self._window._opacity_effect.setOpacity(1.0)
+
+        # Tray
         self._tray.setIcon(_make_tray_icon(True))
         self._tray.setToolTip("VoiceInput — 录音中...")
-        print("[DEBUG] 开始录音")
+        self._rebuild_tray_menu()
 
     def _stop_recording(self):
-        self._recording = False
-        self._duration_timer.stop()
+        if self._state != State.RECORDING:
+            return
 
-        if self._recorder:
-            self._recorder.stop()
-            self._recorder = None
+        self._state = State.RECOGNIZING
+        duration = self._recorder.duration if self._recorder else 0
 
-        if self._float_win:
-            self._float_win.set_recording(False)
+        self._recorder.stop()
+        self._recorder = None
+        self._vad = None
 
-        if self._session:
-            try:
-                final = self._session.finish()
-            except Exception:
-                final = ""
-            self._session = None
+        if self._window:
+            self._window.set_recording(False)
 
         self._tray.setIcon(_make_tray_icon(False))
         self._tray.setToolTip("VoiceInput — 语音输入法")
+        self._rebuild_tray_menu()
 
+        if duration < 0.5:
+            self._typer.reset()
+            self._cleanup_session()
+            self._transition_to_idle()
+            return
+
+        # Wait for final results
+        try:
+            final = self._session.finish() if self._session else ""
+        except Exception:
+            final = ""
+
+        self._typer.reset()
         if final.strip():
             self._type_text(final)
-            print(f"[DEBUG] 输入完成: {final}")
 
-        QTimer.singleShot(1500, self._hide_floating)
+        self._cleanup_session()
+        self._transition_to_idle()
 
-    def _hide_floating(self):
-        if self._float_win and not self._recording:
-            self._float_win.close()
-            self._float_win = None
+    def _transition_to_idle(self):
+        self._state = State.IDLE
+        if self._window:
+            self._window.set_recording(False)
+            # Update window with final accumulated text
+            text = self._typer.full_text
+            if text:
+                self._window.set_text(text)
 
-    # ── ASR callbacks (from background threads) ─────────────────
-    def _on_asr_partial(self, text: str, is_final: bool,
-                        is_seg: bool = False, seg_id: int = 0):
+    def _cleanup_session(self):
+        if self._session:
+            try:
+                self._session = None
+            except Exception:
+                pass
+        self._session = None
+
+    # ── Audio Chunk Handler ─────────────────────────────────────
+    def _on_chunk(self, chunk):
+        if self._session and not self._session.is_send_failed:
+            self._session.feed(chunk)
+        if self._vad and self._vad.process_chunk(chunk):
+            self._bridge.silence.emit()
+
+    # ── ASR Callbacks (from background threads) ─────────────────
+    def _on_asr_result(self, text: str, is_final: bool,
+                       is_seg: bool = False, seg_id: int = 0):
         if is_final:
             self._bridge.final.emit(text)
         else:
-            self._bridge.partial.emit(text)
+            self._bridge.partial.emit(text, is_seg)
 
-    def _on_partial(self, text: str):
-        if self._float_win:
-            self._float_win.set_text(text)
+    def _on_asr_error(self, msg: str):
+        self._bridge.error.emit(msg)
+
+    # ── Qt Signal Handlers ──────────────────────────────────────
+    def _on_partial(self, text: str, is_seg: bool):
+        if self._state not in (State.RECORDING, State.RECOGNIZING):
+            return
+        if is_seg:
+            # Segment is final — lock it as committed
+            self._typer.commit_segment(text)
+        else:
+            # In-progress partial — update pending
+            self._typer.update(text)
+        if self._window:
+            self._window.set_text(self._typer.full_text)
 
     def _on_final(self, text: str):
-        if self._float_win and text.strip():
-            self._float_win.set_text(text)
-            self._float_win.set_recording(False)
+        if self._window and text.strip():
+            self._window.set_text(text)
 
     def _on_error(self, msg: str):
-        QMessageBox.warning(None, "错误", msg)
+        if self._state == State.RECORDING:
+            if self._recorder:
+                self._recorder.stop()
+                self._recorder = None
+            self._vad = None
+            self._cleanup_session()
 
-    def _tick_duration(self):
-        if self._float_win:
-            elapsed = int(time.perf_counter()) - self._start_ts
-            self._float_win.set_duration(elapsed)
+        self._typer.reset()
+        self._show_error("识别中断")
+        self._state = State.IDLE
 
+    def _on_silence(self):
+        if self._state == State.RECORDING:
+            self._stop_recording()
+
+    # ── Typing ──────────────────────────────────────────────────
     @staticmethod
     def _type_text(text: str):
         old = pyperclip.paste()
@@ -366,34 +387,73 @@ class VoiceInputApp(QObject):
             pyperclip.copy(old)
         threading.Thread(target=restore, daemon=True).start()
 
+    # ── Window ──────────────────────────────────────────────────
+    def _place_window(self):
+        if not self._window:
+            return
+        x = self._config.data.window_x
+        y = self._config.data.window_y
+        if x is not None and y is not None:
+            self._window.move(x, y)
+        else:
+            screen = QApplication.primaryScreen().availableGeometry()
+            x = (screen.width() - self._window.width()) // 2
+            y = screen.bottom() - self._window.height() - 80
+            self._window.move(x, y)
+
+    def _save_window_pos(self):
+        if self._window:
+            pos = self._window.pos()
+            self._config.data.window_x = pos.x()
+            self._config.data.window_y = pos.y()
+            self._config.save()
+
+    def _on_window_closed(self):
+        self._save_window_pos()
+        if self._state == State.RECORDING:
+            if self._recorder:
+                self._recorder.stop()
+            self._recorder = None
+            self._cleanup_session()
+            self._state = State.IDLE
+            self._tray.setIcon(_make_tray_icon(False))
+            self._rebuild_tray_menu()
+
+    def _show_error(self, msg: str):
+        if self._window:
+            self._window.set_recording(False)
+            self._window.set_error(msg)
+
+    # ── System Tray ─────────────────────────────────────────────
+    def _rebuild_tray_menu(self):
+        menu = QMenu()
+        if self._state == State.RECORDING:
+            menu.addAction("停止录音", self._bridge.toggle.emit)
+        else:
+            menu.addAction("开始录音", self._bridge.toggle.emit)
+        menu.addSeparator()
+        menu.addAction("设置...", self._show_settings)
+        menu.addSeparator()
+        menu.addAction("退出", self._quit)
+        self._tray.setContextMenu(menu)
+
+    # ── Settings ────────────────────────────────────────────────
     def _show_settings(self):
-        dlg = SettingsDialog()
-        if dlg.exec() == QDialog.Accepted:
-            self._engine = ASREngine()
-
-    def _quit(self):
-        if self._recording:
+        was_recording = self._state == State.RECORDING
+        if was_recording:
             self._stop_recording()
-        kb.unhook_all()
+
+        dlg = SettingsDialog(self._config)
+        if dlg.exec() == SettingsDialog.Accepted:
+            self._engine = ASREngine(self._config.data)
+            self.rebind_hotkey()
+            if self._window:
+                self._window.set_hotkey_label(self._config.data.hotkey)
+
+    # ── Quit ────────────────────────────────────────────────────
+    def _quit(self):
+        if self._state == State.RECORDING:
+            self._stop_recording()
+        self._unbind_hotkey()
+        self._save_window_pos()
         self._app.quit()
-
-
-def main():
-    # Handle Ctrl+C gracefully
-    signal.signal(signal.SIGINT, lambda *a: QApplication.quit())
-
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
-    app.setApplicationName("VoiceInput")
-
-    # Timer to let Python process signals
-    timer = QTimer()
-    timer.timeout.connect(lambda: None)
-    timer.start(200)
-
-    VoiceInputApp()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

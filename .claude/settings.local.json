@@ -13,7 +13,25 @@
       "WebSearch",
       "Bash(../.venv/Scripts/python.exe app.py)",
       "Bash(../.venv/Scripts/python.exe -c \"import sys; print\\('start'\\); from PySide6.QtWidgets import QApplication; print\\('ok'\\)\")",
-      "Bash(../.venv/Scripts/python.exe -c ' *)"
+      "Bash(../.venv/Scripts/python.exe -c ' *)",
+      "Bash(D:/VoiceInput/.venv/Scripts/python.exe *)",
+      "Bash(python app.py)",
+      "Bash(tasklist /FI \"IMAGENAME eq python.exe\")",
+      "Bash(pkill -f \"python app.py\")",
+      "Bash(python *)",
+      "Bash(pkill -f \"python\")",
+      "Bash(kill -9 671 685 692 699 721)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git show *)",
+      "Bash(rm -f voiceinput/THREADING.md)",
+      "Bash(\"D:/VoiceInput/.venv/Scripts/python.exe\" --version)",
+      "Bash(\"D:/VoiceInput/.venv/Scripts/pip.exe\" list *)",
+      "Bash(.venv/Scripts/pip.exe list *)",
+      "Bash(pip list *)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, 'voiceinput'\\); from window import FloatingCardWindow; from app import VoiceInputApp, LiveTyper, AppBridge, State; print\\('All imports OK'\\); lt = LiveTyper\\(\\); print\\(f'LiveTyper OK: full_text empty={repr\\(lt.full_text\\)}'\\); lt.update\\('你好'\\); print\\(f'After update: {repr\\(lt.full_text\\)}'\\); lt.commit_segment\\('你好'\\); print\\(f'After commit: {repr\\(lt.full_text\\)}'\\); lt.update\\('今天'\\); print\\(f'After new segment: {repr\\(lt.full_text\\)}'\\); print\\('LiveTyper segment tracking: PASS'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, 'voiceinput'\\); from window import FloatingCardWindow; print\\('window.py OK'\\); from app import VoiceInputApp, LiveTyper, AppBridge, State; print\\('app.py OK'\\); from settings import SettingsDialog; print\\('settings.py OK'\\); print\\('All modules pass syntax check'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, 'voiceinput'\\); from window import FloatingCardWindow; from app import VoiceInputApp, LiveTyper, AppBridge; from settings import SettingsDialog; print\\('All modules OK'\\); print\\(''\\); # Verify LiveTyper segment logic; lt = LiveTyper\\(\\); lt.update\\('Hello'\\); assert lt.full_text == 'Hello', f'Expected Hello, got {lt.full_text}'; lt.commit_segment\\('Hello'\\); assert lt.full_text == 'Hello', f'Expected Hello after commit, got {lt.full_text}'; assert lt._committed == 'Hello', f'committed should be Hello'; assert lt._pending == '', f'pending should be empty'; lt.update\\('World'\\); assert lt.full_text == 'HelloWorld', f'Expected HelloWorld, got {lt.full_text}'; assert lt._committed == 'Hello', f'committed should stay Hello'; assert lt._pending == 'World', f'pending should be World'; print\\('LiveTyper segment logic: PASS'\\); lt.reset\\(\\); assert lt.full_text == '', f'Expected empty after reset'; print\\('LiveTyper reset: PASS'\\)\")"
     ]
   }
 }
