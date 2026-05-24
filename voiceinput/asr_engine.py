@@ -4,7 +4,6 @@ import hmac
 import hashlib
 import base64
 import json
-import queue
 import threading
 import uuid
 from pathlib import Path
@@ -66,12 +65,14 @@ def _extract_text(data):
 class XfyunStreamingSession:
     """Real-time streaming ASR session — open once, feed chunks, get live results."""
 
-    def __init__(self, app_id, access_key_id, access_key_secret, on_partial=None, on_log=None):
+    def __init__(self, app_id, access_key_id, access_key_secret,
+                 on_partial=None, on_log=None, on_error=None):
         self._app_id = app_id
         self._key_id = access_key_id
         self._key_secret = access_key_secret
-        self.on_partial = on_partial  # callback(text: str, is_final: bool)
-        self.on_log = on_log          # callback(msg: dict) for raw API messages
+        self.on_partial = on_partial
+        self.on_log = on_log
+        self.on_error = on_error
 
         self._ws = None
         self._sid = None
@@ -83,22 +84,57 @@ class XfyunStreamingSession:
         self._segments = {}            # seg_id -> final text (type=0)
         self._intermediate_texts = {}  # seg_id -> latest intermediate text (type=1)
 
+        self._ready = threading.Event()
+        self._conn_error = None
+        self._pending_chunks = []
+        self._lock = threading.Lock()
+
     def start(self):
-        url = _build_url(self._app_id, self._key_id, self._key_secret)
-        self._ws = websocket.create_connection(url)
-        self._ws.settimeout(0.5)
+        """Launch WebSocket connection in background. Non-blocking."""
+        t = threading.Thread(target=self._connect, daemon=True)
+        t.start()
 
-        handshake = json.loads(self._ws.recv())
-        self._sid = handshake.get("sid", "")
-        if self.on_log:
-            self.on_log({"event": "handshake", **handshake})
-
-        self._running = True
-        self._recv_thread = threading.Thread(target=self._receiver, daemon=True)
-        self._recv_thread.start()
+    def _connect(self):
+        try:
+            url = _build_url(self._app_id, self._key_id, self._key_secret)
+            ws = websocket.create_connection(url)
+            ws.settimeout(0.5)
+            handshake = json.loads(ws.recv())
+            sid = handshake.get("sid", "")
+            if self.on_log:
+                self.on_log({"event": "handshake", **handshake})
+            with self._lock:
+                self._ws = ws
+                self._sid = sid
+                self._running = True
+            self._recv_thread = threading.Thread(target=self._receiver, daemon=True)
+            self._recv_thread.start()
+        except Exception as e:
+            self._conn_error = str(e)
+            if self.on_error:
+                self.on_error(str(e))
+        finally:
+            self._ready.set()
 
     def feed(self, chunk: np.ndarray):
-        """Send one 40ms audio chunk (640 samples int16) to the server."""
+        """Buffer or send one 40ms audio chunk."""
+        with self._lock:
+            if not self._ready.is_set():
+                self._pending_chunks.append(chunk.copy())
+                return
+            pending = self._pending_chunks
+            self._pending_chunks = []
+
+        if self._conn_error:
+            return
+
+        for c in pending:
+            if not self._send_failed:
+                try:
+                    self._ws.send_binary(c.tobytes())
+                except Exception:
+                    self._send_failed = True
+
         if self._ws and not self._send_failed:
             try:
                 self._ws.send_binary(chunk.tobytes())
@@ -106,7 +142,11 @@ class XfyunStreamingSession:
                 self._send_failed = True
 
     def finish(self) -> str:
-        """End the stream and return the final recognized text."""
+        self._ready.wait(timeout=10)
+        if self._conn_error or not self._ws:
+            self._running = False
+            return ""
+
         end_msg = {"end": True, "sessionId": self._sid}
         if self.on_log:
             self.on_log({"event": "send_end", **end_msg})
@@ -211,8 +251,9 @@ class ASREngine:
     def __init__(self, model_path=None):
         self._app_id, self._key_id, self._key_secret = load_config()
 
-    def create_session(self, on_partial=None, on_log=None):
+    def create_session(self, on_partial=None, on_log=None, on_error=None):
         return XfyunStreamingSession(
             self._app_id, self._key_id, self._key_secret,
             on_partial=on_partial, on_log=on_log,
+            on_error=on_error,
         )

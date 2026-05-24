@@ -320,16 +320,8 @@ class VoiceInputApp(QObject):
         if self._float_win:
             self._float_win.close()
             self._float_win = None
-        try:
-            self._session = self._engine.create_session(
-                on_partial=self._on_asr_partial,
-                on_log=None,
-            )
-            self._session.start()
-        except Exception as e:
-            QMessageBox.warning(None, "错误", f"连接失败: {e}")
-            return
 
+        # Show floating window immediately (before WebSocket connect)
         self._recording = True
         self._start_ts = int(time.perf_counter())
 
@@ -338,11 +330,21 @@ class VoiceInputApp(QObject):
         self._float_win.set_recording(True)
         self._duration_timer.start(200)
 
+        self._tray.setIcon(_make_tray_icon(True))
+        self._tray.setToolTip("VoiceInput — 连接中...")
+
+        # Start connecting in background; audio is buffered until ready
+        self._session = self._engine.create_session(
+            on_partial=self._on_asr_partial,
+            on_log=None,
+            on_error=self._on_session_error,
+        )
+        self._session.start()
+
+        # Start audio capture immediately (chunks buffered until WS ready)
         self._recorder = AudioRecorder(on_chunk=self._session.feed)
         self._recorder.start()
 
-        self._tray.setIcon(_make_tray_icon(True))
-        self._tray.setToolTip("VoiceInput — 录音中...")
         print("[DEBUG] 开始录音")
 
     def _stop_recording(self):
@@ -399,6 +401,11 @@ class VoiceInputApp(QObject):
 
     def _on_error(self, msg: str):
         QMessageBox.warning(None, "错误", msg)
+
+    def _on_session_error(self, msg: str):
+        if self._recording:
+            self._stop_recording()
+        self._bridge.error.emit(msg)
 
     def _tick_duration(self):
         if self._float_win:
