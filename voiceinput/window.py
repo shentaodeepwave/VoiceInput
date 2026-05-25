@@ -384,7 +384,7 @@ class FloatingCardWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self._shadow = 28  # blur-radius equivalent for manual paintEvent shadow
+        self._shadow = 5  # blur-radius equivalent for manual paintEvent shadow
         sm = self._shadow
         self.setMinimumSize(360 + sm * 2, 160 + sm * 2 + 2)
         self.setMaximumSize(360 + sm * 2, 500 + sm * 2 + 2)
@@ -406,7 +406,7 @@ class FloatingCardWindow(QWidget):
         # Padding reserves space for the manual drop-shadow drawn in paintEvent
         # so the shadow doesn't produce negative dirty-rect coords that break
         # UpdateLayeredWindowIndirect on Windows.
-        shadow_margin = 28
+        shadow_margin = 5
         outer = QVBoxLayout(self)
         outer.setContentsMargins(shadow_margin, shadow_margin, shadow_margin, shadow_margin + 2)
 
