@@ -361,7 +361,23 @@ class VoiceInputApp(QObject):
     # ── Typing ──────────────────────────────────────────────────
     @staticmethod
     def _type_text(text: str):
-        kb.write(text, delay=0.005)
+        import pyperclip
+        # Save clipboard so we can restore it after paste
+        try:
+            prev = pyperclip.paste()
+        except Exception:
+            prev = ""
+        pyperclip.copy(text)
+        kb.press_and_release("ctrl+v")
+        # Restore after a short delay — Qt timer would be better but
+        # this runs in a cross-thread context, so a one-shot timer
+        # via QTimer isn't available here. The paste is near-instant.
+        import time
+        time.sleep(0.15)
+        try:
+            pyperclip.copy(prev)
+        except Exception:
+            pass
 
     # ── History ─────────────────────────────────────────────────
     def _on_history_toggle(self):
