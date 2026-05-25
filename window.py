@@ -1,8 +1,9 @@
-from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption
+from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer, QRectF
+from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect,
+    QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect, QSizePolicy,
+    QScrollArea, QSpacerItem,
 )
 
 
@@ -34,7 +35,7 @@ class _MicButton(QPushButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(44, 44)
+        self.setFixedSize(34, 34)
         self.setCursor(Qt.PointingHandCursor)
         self._recording = False
         self._ring_opacity = 0.0
@@ -74,8 +75,7 @@ class _MicButton(QPushButton):
 
         # Glow ring when recording
         if self._recording and self._ring_opacity > 0.01:
-            ring_r = min(w, h) / 2 + 6
-            gradient = QPainter()
+            ring_r = min(w, h) / 2 + 4
             p.setPen(Qt.NoPen)
             p.setBrush(QBrush(QColor(124, 143, 255, int(self._ring_opacity * 60))))
             p.drawEllipse(QPoint(int(cx), int(cy)), int(ring_r), int(ring_r))
@@ -91,9 +91,9 @@ class _MicButton(QPushButton):
         if self.underMouse() and not self._recording:
             bg = QColor("#3d3d50")
 
-        p.setPen(QPen(border_color, 1.5))
+        p.setPen(QPen(border_color, 1.2))
         p.setBrush(QBrush(bg))
-        r = min(w, h) / 2 - 3
+        r = min(w, h) / 2 - 2
         p.drawEllipse(QPoint(int(cx), int(cy)), int(r), int(r))
 
         # Icon
@@ -103,29 +103,29 @@ class _MicButton(QPushButton):
 
         if self._recording:
             # Stop square
-            sq = 12
+            sq = 9
             p.drawRoundedRect(int(cx - sq / 2), int(cy - sq / 2), sq, sq, 3, 3)
         else:
             # Microphone: vertical capsule > narrow neck > handle
             path = QPainterPath()
-            cap_w, cap_h = 9, 14
-            hdl_w, hdl_h = 4, 9
-            top = cy - 9
+            cap_w, cap_h = 7, 11
+            hdl_w, hdl_h = 3, 7
+            top = cy - 7
             mid_y = top + cap_h
             bot_y = mid_y + hdl_h
-            r = 3
+            r = 2
 
             # Top capsule
             path.moveTo(cx - cap_w / 2, top + r)
             path.arcTo(cx - cap_w / 2, top, cap_w, r * 2, 180, -180)
             path.lineTo(cx + cap_w / 2, mid_y - r)
             # Right neck curve — bulge outward
-            path.quadTo(cx + cap_w / 2 + 2, mid_y, cx + hdl_w / 2, mid_y)
+            path.quadTo(cx + cap_w / 2 + 1.5, mid_y, cx + hdl_w / 2, mid_y)
             path.lineTo(cx + hdl_w / 2, bot_y - r)
             path.arcTo(cx - hdl_w / 2, bot_y - r * 2, hdl_w, r * 2, 0, -180)
             path.lineTo(cx - hdl_w / 2, mid_y)
             # Left neck curve — bulge outward
-            path.quadTo(cx - cap_w / 2 - 2, mid_y, cx - cap_w / 2, mid_y - r)
+            path.quadTo(cx - cap_w / 2 - 1.5, mid_y, cx - cap_w / 2, mid_y - r)
             path.closeSubpath()
 
             p.drawPath(path)
@@ -175,9 +175,218 @@ class _RecordingDot(QLabel):
         """)
 
 
+class _HistoryButton(QPushButton):
+    """Clock icon button for toggling history panel."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(26, 26)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.06);
+                border-radius: 6px;
+            }
+        """)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        cx, cy = self.width() / 2, self.height() / 2
+
+        # Clock circle
+        p.setPen(QPen(QColor(255, 255, 255, 90), 1.2))
+        p.setBrush(Qt.NoBrush)
+        r = 7
+        p.drawEllipse(QPoint(int(cx), int(cy)), r, r)
+
+        # Clock hands
+        p.setPen(QPen(QColor(255, 255, 255, 110), 1.2))
+        p.drawLine(int(cx), int(cy), int(cx), int(cy - 4))
+        p.drawLine(int(cx), int(cy), int(cx + 3.5), int(cy - 1))
+
+        p.end()
+
+
+class _HistoryBubble(QFrame):
+
+    def __init__(self, text: str, index: int, parent=None):
+        super().__init__(parent)
+        self._index = index
+        self.setObjectName("bubble")
+        self.setStyleSheet("""
+            #bubble {
+                background: rgba(255, 255, 255, 0.05);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.04);
+            }
+        """)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 8)
+        layout.setSpacing(8)
+
+        # Text label
+        self._label = QLabel(text)
+        self._label.setWordWrap(True)
+        self._label.setStyleSheet("""
+            QLabel {
+                color: #c8c8d0;
+                font-size: 13px;
+                font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                background: transparent;
+                border: none;
+            }
+        """)
+        layout.addWidget(self._label)
+
+        # Bottom action row
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+        actions.addStretch()
+
+        copy_btn = QPushButton()
+        copy_btn.setFixedSize(22, 22)
+        copy_btn.setCursor(Qt.PointingHandCursor)
+        copy_btn.setToolTip("复制")
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: rgba(255,255,255,0.4);
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.08);
+                color: rgba(255,255,255,0.7);
+            }
+        """)
+        copy_btn.clicked.connect(self._on_copy)
+        copy_btn.setText("\u2398")  # ⎘ copy symbol
+        actions.addWidget(copy_btn)
+
+        del_btn = QPushButton()
+        del_btn.setFixedSize(22, 22)
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setToolTip("删除")
+        del_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: rgba(255,255,255,0.3);
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 80, 80, 0.15);
+                color: #FF6B6B;
+            }
+        """)
+        del_btn.clicked.connect(self._on_delete)
+        del_btn.setText("\u2715")  # ✕
+        actions.addWidget(del_btn)
+
+        layout.addLayout(actions)
+
+    def _on_copy(self):
+        w = self.window()
+        if hasattr(w, 'history_copy'):
+            w.history_copy.emit(self._label.text())
+
+    def _on_delete(self):
+        w = self.window()
+        if hasattr(w, 'history_delete'):
+            w.history_delete.emit(self._index)
+
+
+class _HistoryPanel(QScrollArea):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("history_panel")
+        self.setStyleSheet("""
+            #history_panel {
+                background: transparent;
+                border: none;
+            }
+        """)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setMaximumHeight(260)
+        self.setVisible(False)
+
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        self._layout = QVBoxLayout(container)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(6)
+
+        self._empty_label = QLabel("\u6682\u65E0\u8BB0\u5F55")  # 暂无记录
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setStyleSheet("""
+            QLabel {
+                color: rgba(255, 255, 255, 0.25);
+                font-size: 12px;
+                font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                padding: 16px 0;
+            }
+        """)
+        self._empty_label.setVisible(False)
+        self._layout.addWidget(self._empty_label)
+        self._layout.addStretch()
+        self.setWidget(container)
+
+        # Scrollbar styling
+        self.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical {
+                background: transparent;
+                width: 4px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 2px;
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+        """)
+
+    def set_records(self, records: list[str]):
+        # Remove existing bubbles (skip empty_label and stretch)
+        while self._layout.count() > 2:
+            item = self._layout.takeAt(0)
+            if item.widget() and item.widget() is not self._empty_label:
+                item.widget().deleteLater()
+            del item
+
+        if not records:
+            self._empty_label.setVisible(True)
+        else:
+            self._empty_label.setVisible(False)
+            for i, text in enumerate(records):
+                bubble = _HistoryBubble(text, i)
+                self._layout.insertWidget(self._layout.count() - 2, bubble)
+
+        self.setVisible(True)
+
+
 class FloatingCardWindow(QWidget):
     mic_clicked = Signal()
     closed = Signal()
+    history_toggled = Signal()
+    history_copy = Signal(str)
+    history_delete = Signal(int)
 
     def __init__(self, hotkey: str = "F2", is_tap_mode: bool = True):
         super().__init__()
@@ -187,7 +396,9 @@ class FloatingCardWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setFixedSize(360, 160)
+        self.setMinimumSize(360, 160)
+        self.setMaximumSize(360, 500)
+        self.resize(360, 160)
         self.setWindowOpacity(0.0)
 
         self._drag_pos: QPoint | None = None
@@ -227,7 +438,7 @@ class FloatingCardWindow(QWidget):
         layout.setContentsMargins(20, 14, 20, 14)
         layout.setSpacing(8)
 
-        # Header row: label + recording dot
+        # Header row: label only
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
@@ -241,19 +452,23 @@ class FloatingCardWindow(QWidget):
             }
         """)
 
-        self._status_dot = _RecordingDot()
+        self._history_btn = _HistoryButton()
+        self._history_btn.clicked.connect(self.history_toggled.emit)
 
         header.addWidget(self._title_label)
         header.addStretch()
-        header.addWidget(self._status_dot, alignment=Qt.AlignVCenter)
+        header.addWidget(self._history_btn, alignment=Qt.AlignVCenter)
         layout.addLayout(header)
 
         # Text area
         self._text_edit = _PlaceholderTextEdit()
         self._text_edit.setReadOnly(True)
-        self._text_edit.setFixedHeight(32)
+        self._text_edit.setMinimumHeight(24)
+        self._text_edit.setMaximumHeight(140)
+        self._text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._text_edit.setFrameShape(QFrame.NoFrame)
-        self._text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._text_edit.setAutoFillBackground(False)
         self._text_edit.viewport().setAutoFillBackground(False)
         pal = self._text_edit.palette()
@@ -262,13 +477,20 @@ class FloatingCardWindow(QWidget):
         self._text_edit.setPalette(pal)
         layout.addWidget(self._text_edit)
 
+        # History panel
+        self._history_panel = _HistoryPanel(self._card)
+        layout.addWidget(self._history_panel)
+
         layout.addStretch()
 
-        # Bottom bar
+        # Bottom bar: status dot + mic button
         bottom = QHBoxLayout()
         bottom.setContentsMargins(0, 0, 2, 0)
-        bottom.setSpacing(8)
+        bottom.setSpacing(10)
         bottom.addStretch()
+
+        self._status_dot = _RecordingDot()
+        bottom.addWidget(self._status_dot, alignment=Qt.AlignVCenter)
 
         self._mic_btn = _MicButton()
         self._mic_btn.clicked.connect(self.mic_clicked.emit)
@@ -318,8 +540,42 @@ class FloatingCardWindow(QWidget):
         cursor = self._text_edit.textCursor()
         cursor.movePosition(cursor.End)
         self._text_edit.setTextCursor(cursor)
+        self._adjust_height()
 
-    def set_placeholder(self, hotkey: str, is_tap_mode: bool):
+    def _adjust_height(self):
+        if not self._text_edit.toPlainText() and not self._history_panel.isVisible():
+            self.resize(360, 160)
+            return
+
+        text = self._text_edit.toPlainText()
+        available_w = max(self._text_edit.viewport().width(), 1)
+        fm = QFontMetrics(self._text_edit.font())
+        # Use boundingRect with word wrap to get text height
+        br = fm.boundingRect(0, 0, available_w, 0, Qt.TextWordWrap, text)
+        text_h = max(24, min(br.height() + 8, 140))
+        self._text_edit.setFixedHeight(text_h)
+
+        history_h = self._history_panel.height() if self._history_panel.isVisible() else 0
+
+        window_h = text_h + history_h + 28 + 20 + 44 + 16
+        max_h = 500 if self._history_panel.isVisible() else 300
+        window_h = max(160, min(window_h, max_h))
+        self.resize(360, window_h)
+
+    def show_history(self, records: list[str]):
+        self._history_panel.set_records(records)
+        self._history_panel.widget().adjustSize()
+        if records:
+            history_h = min(self._history_panel.widget().sizeHint().height(), 260)
+        else:
+            history_h = self._history_panel._empty_label.sizeHint().height() + 12
+        self._history_panel.setFixedHeight(history_h)
+        self._adjust_height()
+
+    def hide_history(self):
+        self._history_panel.setVisible(False)
+        self._history_panel.setFixedHeight(0)
+        self._adjust_height()
         self._hotkey = hotkey
         self._is_tap_mode = is_tap_mode
         self._update_placeholder()
@@ -334,6 +590,8 @@ class FloatingCardWindow(QWidget):
         self._recording = on
         self._mic_btn.set_recording(on)
         if on:
+            self._history_panel.setVisible(False)
+            self._history_panel.setFixedHeight(0)
             self._status_dot.start_pulse()
             self._card.setStyleSheet("""
                 #card {

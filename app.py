@@ -61,6 +61,8 @@ class VoiceInputApp(QObject):
         self._start_ts = 0
         self._last_toggle_ts = 0
         self._hotkey_ids = []
+        self._history: list[str] = []
+        self._history_open = False
 
         # Signal wiring
         self._bridge.partial.connect(self._on_partial)
@@ -84,6 +86,9 @@ class VoiceInputApp(QObject):
         self._window.mic_clicked.connect(self._bridge.toggle.emit)
         self._window.closed.connect(self._on_window_closed)
         self._window.destroyed.connect(lambda: setattr(self, "_window", None))
+        self._window.history_toggled.connect(self._on_history_toggle)
+        self._window.history_copy.connect(self._on_history_copy)
+        self._window.history_delete.connect(self._on_history_delete)
         self._window.show_with_fade()
         self._place_window()
 
@@ -179,6 +184,8 @@ class VoiceInputApp(QObject):
     def _start_recording(self):
         if self._state != State.IDLE:
             return
+
+        self._history_open = False
 
         self._engine = ASREngine(self._config.data)
 
@@ -304,8 +311,12 @@ class VoiceInputApp(QObject):
 
     def _on_final(self, text: str):
         self._accumulated_text = text
-        if self._window and text.strip():
-            self._window.set_text(text)
+        if text.strip():
+            self._history.insert(0, text.strip())
+            if len(self._history) > 3:
+                self._history.pop()
+            if self._window:
+                self._window.set_text(text)
 
     def _on_error(self, msg: str):
         if self._state == State.RECORDING:
@@ -319,7 +330,6 @@ class VoiceInputApp(QObject):
             self._cleanup_session()
 
         self._accumulated_text = ""
-        self._show_error("识别中断")
 
         self._tray.setIcon(_make_tray_icon(False))
         self._tray.setToolTip("VoiceInput — 语音输入法")
@@ -334,6 +344,24 @@ class VoiceInputApp(QObject):
     @staticmethod
     def _type_text(text: str):
         kb.write(text, delay=0.005)
+
+    # ── History ─────────────────────────────────────────────────
+    def _on_history_toggle(self):
+        self._history_open = not self._history_open
+        if self._window:
+            if self._history_open:
+                self._window.show_history(self._history)
+            else:
+                self._window.hide_history()
+
+    def _on_history_copy(self, text: str):
+        QApplication.clipboard().setText(text)
+
+    def _on_history_delete(self, index: int):
+        if 0 <= index < len(self._history):
+            del self._history[index]
+            if self._window:
+                self._window.show_history(self._history)
 
     # ── Window ──────────────────────────────────────────────────
     def _place_window(self):
