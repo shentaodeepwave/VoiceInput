@@ -1,5 +1,6 @@
 # 🎙️ VoiceInput - 桌面语音输入助手
 > 七牛云 × XEngineer 暑期实训营 · 72小时极速开发
+demo视频链接：https://www.bilibili.com/video/BV1GDGo6UEw1/
 ## 📌 项目简介
 **VoiceInput** 是一款桌面语音输入工具，以**迷你悬浮窗**形式常驻桌面。  
 按下 **F2** 或单击麦克风即可开始语音转文字，识别结果**实时流式**显示，并自动填入当前光标所在位置。  
