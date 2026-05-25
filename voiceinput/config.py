@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import os
+import sys
 import yaml
 
 
@@ -19,11 +20,23 @@ class AppConfig:
     window_y: int | None = None
 
 
+def _default_config_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "config.yaml"
+    return Path(__file__).parent / "config.yaml"
+
+
+def _user_config_path() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return base / "VoiceInput" / "config.yaml"
+    return Path(__file__).parent / "config.yaml"
+
+
 class ConfigManager:
-    def __init__(self, config_path: Path | None = None):
-        if config_path is None:
-            config_path = Path(__file__).parent / "config.yaml"
-        self._path = config_path
+    def __init__(self):
+        self._default_path = _default_config_path()
+        self._user_path = _user_config_path()
         self._config = AppConfig()
         self.load()
 
@@ -32,11 +45,12 @@ class ConfigManager:
         return self._config
 
     def load(self):
-        if not self._path.exists():
+        path = self._user_path if self._user_path.exists() else self._default_path
+        if not path.exists():
             self._apply_env_overrides()
             return
 
-        with open(self._path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
         xf = raw.get("xfyun", {})
@@ -77,5 +91,6 @@ class ConfigManager:
             "window_x": self._config.window_x,
             "window_y": self._config.window_y,
         }
-        with open(self._path, "w", encoding="utf-8") as f:
+        self._user_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._user_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False)

@@ -1,5 +1,7 @@
 .venv/
-voiceinput/config.yaml
 logs/
 __pycache__/
 *.pyc
+build/
+dist/
+*.spec.bak

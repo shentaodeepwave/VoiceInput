@@ -374,6 +374,8 @@ class FloatingCardWindow(QWidget):
     history_copy = Signal(str)
     history_delete = Signal(int)
 
+    SHADOW_MARGIN = 28  # Enough for blurRadius=24 + offset=4
+
     def __init__(self, hotkey: str = "F2", is_tap_mode: bool = True):
         super().__init__()
         self.setWindowFlags(
@@ -382,9 +384,11 @@ class FloatingCardWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setMinimumSize(360, 160)
-        self.setMaximumSize(360, 500)
-        self.resize(360, 160)
+        card_w, card_h = 360, 160
+        m = self.SHADOW_MARGIN
+        self.setMinimumSize(card_w + 2 * m, card_h + 2 * m)
+        self.setMaximumSize(card_w + 2 * m, 500 + 2 * m)
+        self.resize(card_w + 2 * m, card_h + 2 * m)
         self.setWindowOpacity(0.0)
 
         self._drag_pos: QPoint | None = None
@@ -399,8 +403,9 @@ class FloatingCardWindow(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        m = self.SHADOW_MARGIN
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(m, m, m, m)
 
         # Shadow
         shadow = QGraphicsDropShadowEffect(self)
@@ -529,8 +534,12 @@ class FloatingCardWindow(QWidget):
         self._adjust_height()
 
     def _adjust_height(self):
+        m = self.SHADOW_MARGIN
+        card_w = 360
+        card_h_min = 160
+
         if not self._text_edit.toPlainText() and not self._history_panel.isVisible():
-            self.resize(360, 160)
+            self.resize(card_w + 2 * m, card_h_min + 2 * m)
             return
 
         text = self._text_edit.toPlainText()
@@ -542,10 +551,10 @@ class FloatingCardWindow(QWidget):
 
         history_h = self._history_panel.height() if self._history_panel.isVisible() else 0
 
-        window_h = text_h + history_h + 28 + 20 + 44 + 16
-        max_h = 500 if self._history_panel.isVisible() else 300
-        window_h = max(160, min(window_h, max_h))
-        self.resize(360, window_h)
+        card_h = text_h + history_h + 28 + 20 + 44 + 16
+        max_card_h = 500 if self._history_panel.isVisible() else 300
+        card_h = max(card_h_min, min(card_h, max_card_h))
+        self.resize(card_w + 2 * m, card_h + 2 * m)
 
     def show_history(self, records: list[str]):
         self._history_panel.set_records(records)
