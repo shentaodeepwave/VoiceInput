@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QBrush, QPen, QTextOption, QTextCursor, QFontMetrics
+from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QBrush, QPen, QTextOption, QTextCursor, QFontMetrics, QLinearGradient, QRadialGradient
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect, QSizePolicy,
@@ -22,7 +22,7 @@ class _PlaceholderTextEdit(QTextEdit):
         super().paintEvent(e)
         if self._placeholder and not self.toPlainText():
             p = QPainter(self.viewport())
-            p.setPen(QColor(255, 255, 255, 60))
+            p.setPen(QColor(0, 0, 0, 60))
             p.setFont(self.font())
             option = QTextOption()
             option.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -72,44 +72,46 @@ class _MicButton(QPushButton):
 
         w, h = self.width(), self.height()
         cx, cy = w / 2, h / 2
+        r = min(w, h) / 2 - 3
 
-        # Glow ring when recording
+        # Outer glow ring when recording
         if self._recording and self._ring_opacity > 0.01:
-            ring_r = min(w, h) / 2 + 6
-            gradient = QPainter()
+            outer_r = r + 10
+            glow = QRadialGradient(cx, cy, outer_r)
+            glow.setColorAt(0.7, QColor(255, 107, 107, int(self._ring_opacity * 40)))
+            glow.setColorAt(1.0, QColor(255, 107, 107, 0))
             p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor(124, 143, 255, int(self._ring_opacity * 60))))
-            p.drawEllipse(QPoint(int(cx), int(cy)), int(ring_r), int(ring_r))
+            p.setBrush(QBrush(glow))
+            p.drawEllipse(QPoint(int(cx), int(cy)), int(outer_r), int(outer_r))
 
-        # Button circle
+        # Button circle with gradient
         if self._recording:
-            bg = QColor("#2a2a35")
-            border_color = QColor("#FF6B6B")
+            grad = QLinearGradient(cx - r, cy - r, cx + r, cy + r)
+            grad.setColorAt(0, QColor("#ff6b6b"))
+            grad.setColorAt(1, QColor("#ee5a24"))
+            border_color = QColor("#e53e3e")
         else:
-            bg = QColor("#323240")
-            border_color = QColor(255, 255, 255, 25)
+            grad = QLinearGradient(cx - r, cy - r, cx + r, cy + r)
+            grad.setColorAt(0, QColor("#10b981"))
+            grad.setColorAt(1, QColor("#059669"))
+            border_color = QColor(16, 185, 129, 50)
 
         if self.underMouse() and not self._recording:
-            bg = QColor("#3d3d50")
+            grad.setColorAt(0, QColor("#34d399"))
+            grad.setColorAt(1, QColor("#10b981"))
 
         p.setPen(QPen(border_color, 1.5))
-        p.setBrush(QBrush(bg))
-        r = min(w, h) / 2 - 3
+        p.setBrush(QBrush(grad))
         p.drawEllipse(QPoint(int(cx), int(cy)), int(r), int(r))
 
-        # Icon
+        # Icon — always white on gradient
         p.setPen(Qt.NoPen)
-        icon_color = QColor("#e0e0e0" if not self._recording else "#FF6B6B")
-        p.setBrush(QBrush(icon_color))
-
+        p.setBrush(QBrush(QColor("#ffffff")))
         if self._recording:
-            # Stop square
-            sq = 12
+            sq = 11
             p.drawRoundedRect(int(cx - sq / 2), int(cy - sq / 2), sq, sq, 3, 3)
         else:
-            # Simple circle
-            r = 8
-            p.drawEllipse(QPoint(int(cx), int(cy)), r, r)
+            p.drawEllipse(QPoint(int(cx), int(cy)), 7, 7)
 
         p.end()
 
@@ -143,7 +145,7 @@ class _RecordingDot(QLabel):
 
     def _update_style(self):
         if not self._active:
-            color = "#555560"
+            color = "#d0d0d5"
         elif self._phase:
             color = "#FF6B6B"
         else:
@@ -169,7 +171,7 @@ class _HistoryButton(QPushButton):
                 border: none;
             }
             QPushButton:hover {
-                background: rgba(255, 255, 255, 0.06);
+                background: rgba(0, 0, 0, 0.04);
                 border-radius: 6px;
             }
         """)
@@ -179,11 +181,11 @@ class _HistoryButton(QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         cx, cy = self.width() / 2, self.height() / 2
-        p.setPen(QPen(QColor(255, 255, 255, 90), 1.2))
+        p.setPen(QPen(QColor(160, 160, 170, 180), 1.2))
         p.setBrush(Qt.NoBrush)
         r = 7
         p.drawEllipse(QPoint(int(cx), int(cy)), r, r)
-        p.setPen(QPen(QColor(255, 255, 255, 110), 1.2))
+        p.setPen(QPen(QColor(140, 140, 150, 200), 1.2))
         p.drawLine(int(cx), int(cy), int(cx), int(cy - 4))
         p.drawLine(int(cx), int(cy), int(cx + 3.5), int(cy - 1))
         p.end()
@@ -197,9 +199,9 @@ class _HistoryBubble(QFrame):
         self.setObjectName("bubble")
         self.setStyleSheet("""
             #bubble {
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(0, 0, 0, 0.03);
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(0, 0, 0, 0.05);
             }
         """)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -212,7 +214,7 @@ class _HistoryBubble(QFrame):
         self._label.setWordWrap(True)
         self._label.setStyleSheet("""
             QLabel {
-                color: #c8c8d0;
+                color: #3d4048;
                 font-size: 13px;
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
                 background: transparent;
@@ -235,12 +237,12 @@ class _HistoryBubble(QFrame):
                 background: transparent;
                 border: none;
                 border-radius: 4px;
-                color: rgba(255,255,255,0.4);
+                color: rgba(0,0,0,0.3);
                 font-size: 11px;
             }
             QPushButton:hover {
-                background: rgba(255, 255, 255, 0.08);
-                color: rgba(255,255,255,0.7);
+                background: rgba(0, 0, 0, 0.06);
+                color: rgba(0,0,0,0.6);
             }
         """)
         copy_btn.clicked.connect(self._on_copy)
@@ -256,12 +258,12 @@ class _HistoryBubble(QFrame):
                 background: transparent;
                 border: none;
                 border-radius: 4px;
-                color: rgba(255,255,255,0.3);
+                color: rgba(0,0,0,0.2);
                 font-size: 10px;
             }
             QPushButton:hover {
-                background: rgba(255, 80, 80, 0.15);
-                color: #FF6B6B;
+                background: rgba(255, 80, 80, 0.1);
+                color: #e53e3e;
             }
         """)
         del_btn.clicked.connect(self._on_delete)
@@ -308,7 +310,7 @@ class _HistoryPanel(QScrollArea):
         self._empty_label.setAlignment(Qt.AlignCenter)
         self._empty_label.setStyleSheet("""
             QLabel {
-                color: rgba(255, 255, 255, 0.25);
+                color: rgba(0, 0, 0, 0.2);
                 font-size: 12px;
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
                 padding: 16px 0;
@@ -326,7 +328,7 @@ class _HistoryPanel(QScrollArea):
                 margin: 0;
             }
             QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(0, 0, 0, 0.1);
                 border-radius: 2px;
                 min-height: 20px;
             }
@@ -404,18 +406,19 @@ class FloatingCardWindow(QWidget):
 
         # Shadow
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setColor(QColor(0, 0, 0, 80))
-        shadow.setOffset(0, 4)
+        shadow.setBlurRadius(28)
+        shadow.setColor(QColor(0, 0, 0, 40))
+        shadow.setOffset(0, 2)
 
         self._card = QWidget(self)
         self._card.setObjectName("card")
         self._card.setGraphicsEffect(shadow)
         self._card.setStyleSheet("""
             #card {
-                background: rgba(24, 24, 32, 0.96);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #faf9f7, stop:0.5 #f5f2ee, stop:1 #faf9f7);
                 border-radius: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(0, 0, 0, 0.06);
             }
         """)
         outer.addWidget(self._card)
@@ -432,8 +435,9 @@ class FloatingCardWindow(QWidget):
         self._title_label = QLabel("VoiceInput")
         self._title_label.setStyleSheet("""
             QLabel {
-                color: rgba(255, 255, 255, 0.35);
+                color: rgba(0, 0, 0, 0.35);
                 font-size: 11px;
+                font-weight: 500;
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
             }
         """)
@@ -488,17 +492,17 @@ class FloatingCardWindow(QWidget):
         self._update_placeholder()
 
     def _apply_text_style(self, mode: str):
-        color = "#FF6B6B" if mode == "error" else "#d4d4dc"
+        color = "#e53e3e" if mode == "error" else "#2d3748"
         self._text_edit.setStyleSheet(f"""
             QTextEdit {{
                 color: {color};
                 font-size: 15px;
-                font-weight: 350;
+                font-weight: 400;
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
                 background: transparent;
                 padding: 2px 0;
                 border: none;
-                selection-background-color: rgba(124, 143, 255, 0.3);
+                selection-background-color: rgba(16, 185, 129, 0.25);
             }}
         """)
 
@@ -586,18 +590,20 @@ class FloatingCardWindow(QWidget):
             self._status_dot.start_pulse()
             self._card.setStyleSheet("""
                 #card {
-                    background: rgba(24, 24, 32, 0.96);
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #fff5f5, stop:0.5 #ffe8e8, stop:1 #fff5f5);
                     border-radius: 14px;
-                    border: 1px solid rgba(124, 143, 255, 0.18);
+                    border: 1px solid rgba(229, 62, 62, 0.2);
                 }
             """)
         else:
             self._status_dot.stop_pulse()
             self._card.setStyleSheet("""
                 #card {
-                    background: rgba(24, 24, 32, 0.96);
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #faf9f7, stop:0.5 #f5f2ee, stop:1 #faf9f7);
                     border-radius: 14px;
-                    border: 1px solid rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba(0, 0, 0, 0.06);
                 }
             """)
 
