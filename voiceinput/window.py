@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption
+from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect,
@@ -316,7 +316,7 @@ class FloatingCardWindow(QWidget):
     def set_text(self, text: str):
         self._text_edit.setPlainText(text)
         cursor = self._text_edit.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QTextCursor.End)
         self._text_edit.setTextCursor(cursor)
 
     def set_placeholder(self, hotkey: str, is_tap_mode: bool):

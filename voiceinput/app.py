@@ -61,6 +61,7 @@ class VoiceInputApp(QObject):
         self._start_ts = 0
         self._last_toggle_ts = 0
         self._hotkey_ids = []
+        self._hold_active = False
 
         # Signal wiring
         self._bridge.partial.connect(self._on_partial)
@@ -156,12 +157,39 @@ class VoiceInputApp(QObject):
     def _on_hotkey_trigger(self):
         self._bridge.toggle.emit()
 
+    def _hotkey_main_key(self) -> str:
+        """Return the lowercased main key from the configured hotkey.
+
+        For "ctrl+F2" this returns "f2"; for "F2" it returns "f2".
+        """
+        return self._config.data.hotkey.lower().split("+")[-1]
+
+    def _matches_hotkey(self, e) -> bool:
+        """Check if a keyboard event matches the configured hotkey.
+
+        e.name is always lowercase (e.g. "f2", "ctrl"), so comparison
+        must be case-insensitive.  For multi-key combos like "ctrl+F2"
+        we check the main key plus held modifiers.
+        """
+        hotkey = self._config.data.hotkey
+        parts = hotkey.lower().split("+")
+        main_key = parts[-1]
+        modifiers = parts[:-1]
+        return e.name.lower() == main_key and all(
+            kb.is_pressed(mod) for mod in modifiers
+        )
+
     def _on_hold_press(self, e):
-        if e.name == self._config.data.hotkey and self._state == State.IDLE:
+        if self._matches_hotkey(e) and not self._hold_active:
+            self._hold_active = True
             self._bridge.toggle.emit()
 
     def _on_hold_release(self, e):
-        if e.name == self._config.data.hotkey and self._state == State.RECORDING:
+        # _hold_active guards against stray release events and ensures
+        # the pair belongs to the hotkey even when modifiers were
+        # released before the main key.
+        if self._hold_active and e.name.lower() == self._hotkey_main_key():
+            self._hold_active = False
             self._bridge.toggle.emit()
 
     # ── State Machine ───────────────────────────────────────────
