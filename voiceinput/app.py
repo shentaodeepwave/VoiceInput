@@ -144,14 +144,18 @@ class VoiceInputApp(QObject):
             hid = kb.add_hotkey(hotkey, self._on_hotkey_trigger, suppress=True)
             self._hotkey_ids = [("add_hotkey", hid)]
         else:
-            hid1 = kb.on_press(self._on_hold_press, suppress=True)
-            hid2 = kb.on_release(self._on_hold_release, suppress=True)
-            self._hotkey_ids = [("on_press", hid1), ("on_release", hid2)]
+            main_key = self._hotkey_main_key()
+            hid1 = kb.on_press_key(main_key, self._on_hold_press, suppress=True)
+            hid2 = kb.on_release_key(main_key, self._on_hold_release, suppress=True)
+            self._hotkey_ids = [("on_press_key", hid1), ("on_release_key", hid2)]
 
     def _unbind_hotkey(self):
         for kind, hid in self._hotkey_ids:
             try:
-                kb.remove_hotkey(hid) if kind == "add_hotkey" else kb.unhook(hid)
+                if kind == "add_hotkey":
+                    kb.remove_hotkey(hid)
+                else:
+                    kb.unhook(hid)
             except Exception:
                 pass
         self._hotkey_ids = []
@@ -169,31 +173,17 @@ class VoiceInputApp(QObject):
         """
         return self._config.data.hotkey.lower().split("+")[-1]
 
-    def _matches_hotkey(self, e) -> bool:
-        """Check if a keyboard event matches the configured hotkey.
-
-        e.name is always lowercase (e.g. "f2", "ctrl"), so comparison
-        must be case-insensitive.  For multi-key combos like "ctrl+F2"
-        we check the main key plus held modifiers.
-        """
-        hotkey = self._config.data.hotkey
-        parts = hotkey.lower().split("+")
-        main_key = parts[-1]
-        modifiers = parts[:-1]
-        return e.name.lower() == main_key and all(
-            kb.is_pressed(mod) for mod in modifiers
-        )
+    def _modifiers_held(self) -> bool:
+        modifiers = self._config.data.hotkey.lower().split("+")[:-1]
+        return all(kb.is_pressed(mod) for mod in modifiers)
 
     def _on_hold_press(self, e):
-        if self._matches_hotkey(e) and not self._hold_active:
+        if not self._hold_active and self._modifiers_held():
             self._hold_active = True
             self._bridge.toggle.emit()
 
     def _on_hold_release(self, e):
-        # _hold_active guards against stray release events and ensures
-        # the pair belongs to the hotkey even when modifiers were
-        # released before the main key.
-        if self._hold_active and e.name.lower() == self._hotkey_main_key():
+        if self._hold_active:
             self._hold_active = False
             self._bridge.toggle.emit()
 
@@ -389,7 +379,10 @@ class VoiceInputApp(QObject):
         if 0 <= index < len(self._history):
             del self._history[index]
             if self._window:
-                self._window.show_history(self._history)
+                if self._history:
+                    self._window.remove_history_record(index)
+                else:
+                    self._window.show_history([])
 
     # ── Window ──────────────────────────────────────────────────
     def _place_window(self):

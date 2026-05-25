@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption, QTextCursor, QFontMetrics
+from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QBrush, QPen, QTextOption, QTextCursor, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect, QSizePolicy,
@@ -107,29 +107,9 @@ class _MicButton(QPushButton):
             sq = 12
             p.drawRoundedRect(int(cx - sq / 2), int(cy - sq / 2), sq, sq, 3, 3)
         else:
-            # Microphone: vertical capsule > narrow neck > handle
-            path = QPainterPath()
-            cap_w, cap_h = 9, 14
-            hdl_w, hdl_h = 4, 9
-            top = cy - 9
-            mid_y = top + cap_h
-            bot_y = mid_y + hdl_h
-            r = 3
-
-            # Top capsule
-            path.moveTo(cx - cap_w / 2, top + r)
-            path.arcTo(cx - cap_w / 2, top, cap_w, r * 2, 180, -180)
-            path.lineTo(cx + cap_w / 2, mid_y - r)
-            # Right neck curve — bulge outward
-            path.quadTo(cx + cap_w / 2 + 2, mid_y, cx + hdl_w / 2, mid_y)
-            path.lineTo(cx + hdl_w / 2, bot_y - r)
-            path.arcTo(cx - hdl_w / 2, bot_y - r * 2, hdl_w, r * 2, 0, -180)
-            path.lineTo(cx - hdl_w / 2, mid_y)
-            # Left neck curve — bulge outward
-            path.quadTo(cx - cap_w / 2 - 2, mid_y, cx - cap_w / 2, mid_y - r)
-            path.closeSubpath()
-
-            p.drawPath(path)
+            # Simple circle
+            r = 8
+            p.drawEllipse(QPoint(int(cx), int(cy)), r, r)
 
         p.end()
 
@@ -372,6 +352,20 @@ class _HistoryPanel(QScrollArea):
 
         self.setVisible(True)
 
+    def remove_record(self, index: int):
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), _HistoryBubble):
+                bubble = item.widget()
+                if bubble._index == index:
+                    self._layout.takeAt(i)
+                    bubble.deleteLater()
+                    del item
+                    break
+
+        if self._layout.count() <= 2:
+            self._empty_label.setVisible(True)
+
 
 class FloatingCardWindow(QWidget):
     mic_clicked = Signal()
@@ -566,6 +560,10 @@ class FloatingCardWindow(QWidget):
     def hide_history(self):
         self._history_panel.setVisible(False)
         self._history_panel.setFixedHeight(0)
+        self._adjust_height()
+
+    def remove_history_record(self, index: int):
+        self._history_panel.remove_record(index)
         self._adjust_height()
 
     def set_placeholder(self, hotkey: str, is_tap_mode: bool):
