@@ -1,3 +1,4 @@
+# 🎙️ VoiceInput - 桌面语音输入助手
 > 七牛云 × XEngineer 暑期实训营 · 72小时极速开发
 ## 📌 项目简介
 **VoiceInput** 是一款桌面语音输入工具，以**迷你悬浮窗**形式常驻桌面。  
@@ -22,7 +23,7 @@
 ## 👥 团队分工
 | 角色 | 负责内容 |
 |------|----------|
-| **WELT** — 产品经理 | 需求分析、PRD、UI 文档、测试用例、演示脚本、README、部分前端 |
+| **WELT** — 产品经理 | 需求分析、PRD、UI/交互文档、测试用例、演示脚本、README、部分前端 |
 | **DeepWave** — 开发工程师 | 音频采集、讯飞 API 集成、流式识别、VAD、托盘与快捷键、程序打包 |
 ## 🚀 快速开始
 ### 环境要求
@@ -40,12 +41,9 @@ venv\Scripts\activate      # Windows
 # source venv/bin/activate  # macOS
 # 安装依赖
 pip install -r voiceinput/requirements.txt
-# 配置 API 密钥（三选一）
-# ① 在 voiceinput/config.yaml 中填写（首次运行自动生成模板）
-# ② 设置环境变量 XF_APP_ID / XF_ACCESS_KEY_ID / XF_ACCESS_KEY_SECRET
-# ③ 启动后在系统托盘 → 设置 中填写
-# 启动
+# 启动（首次运行后，在系统托盘 → 设置 中填写讯飞 API 密钥）
 python voiceinput/main.py
+API 密钥也可通过环境变量 XF_APP_ID、XF_ACCESS_KEY_ID、XF_ACCESS_KEY_SECRET 设置。
 📁 项目结构
 voiceinput/
 ├── main.py              # 入口：Qt 应用 + 托盘 + 热键
@@ -56,7 +54,6 @@ voiceinput/
 ├── audio_capture.py     # 录音：sounddevice 16kHz 单声道采集
 ├── asr_engine.py        # 讯飞 WebSocket 流式识别引擎
 ├── vad.py               # 语音活动检测（RMS 能量阈值）
-├── config.yaml          # 用户配置文件（已 gitignore）
 └── requirements.txt     # Python 依赖
 🎛️ 使用说明
 操作	方式
