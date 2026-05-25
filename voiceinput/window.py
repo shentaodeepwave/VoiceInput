@@ -384,9 +384,11 @@ class FloatingCardWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setMinimumSize(360, 160)
-        self.setMaximumSize(360, 500)
-        self.resize(360, 160)
+        self._shadow = 28  # blur-radius equivalent for manual paintEvent shadow
+        sm = self._shadow
+        self.setMinimumSize(360 + sm * 2, 160 + sm * 2 + 2)
+        self.setMaximumSize(360 + sm * 2, 500 + sm * 2 + 2)
+        self.resize(360 + sm * 2, 160 + sm * 2 + 2)
         self.setWindowOpacity(0.0)
 
         self._drag_pos: QPoint | None = None
@@ -401,18 +403,15 @@ class FloatingCardWindow(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        # Padding reserves space for the manual drop-shadow drawn in paintEvent
+        # so the shadow doesn't produce negative dirty-rect coords that break
+        # UpdateLayeredWindowIndirect on Windows.
+        shadow_margin = 28
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        # Shadow
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(28)
-        shadow.setColor(QColor(0, 0, 0, 40))
-        shadow.setOffset(0, 2)
+        outer.setContentsMargins(shadow_margin, shadow_margin, shadow_margin, shadow_margin + 2)
 
         self._card = QWidget(self)
         self._card.setObjectName("card")
-        self._card.setGraphicsEffect(shadow)
         self._card.setStyleSheet("""
             #card {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -533,8 +532,11 @@ class FloatingCardWindow(QWidget):
         self._adjust_height()
 
     def _adjust_height(self):
+        sm = self._shadow
+        base_w, base_h = 360, 160
+
         if not self._text_edit.toPlainText() and not self._history_panel.isVisible():
-            self.resize(360, 160)
+            self.resize(base_w + sm * 2, base_h + sm * 2 + 2)
             return
 
         text = self._text_edit.toPlainText()
@@ -548,8 +550,8 @@ class FloatingCardWindow(QWidget):
 
         window_h = text_h + history_h + 28 + 20 + 44 + 16
         max_h = 500 if self._history_panel.isVisible() else 300
-        window_h = max(160, min(window_h, max_h))
-        self.resize(360, window_h)
+        window_h = max(base_h, min(window_h, max_h))
+        self.resize(base_w + sm * 2, window_h + sm * 2 + 2)
 
     def show_history(self, records: list[str]):
         self._history_panel.set_records(records)
@@ -627,6 +629,21 @@ class FloatingCardWindow(QWidget):
 
     def mouseReleaseEvent(self, e: QMouseEvent):
         self._drag_pos = None
+
+    def paintEvent(self, e):
+        sm = self._shadow
+        card_rect = self._card.geometry()
+        # Simulate a soft drop-shadow by layering concentric rounded rects
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        for i in range(sm, 0, -1):
+            alpha = int(40 * (1 - i / sm) ** 2)
+            if alpha <= 0:
+                continue
+            rr = card_rect.adjusted(-i, -i + 2, i, i + 2)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawRoundedRect(rr, 14, 14)
 
     def closeEvent(self, e):
         self._status_dot.stop_pulse()

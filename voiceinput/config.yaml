@@ -4,8 +4,8 @@ mic_permission_granted: true
 tap_mode: false
 vad_enabled: false
 vad_silence_seconds: 1.5
-window_x: 534
-window_y: 103
+window_x: 725
+window_y: 586
 xfyun:
   access_key_id: 154a0eaa6b45a18e69acbe69659ce366
   access_key_secret: NmZhOWU4MjdkOTk5ZGVmZGE5Y2Q1YThk
