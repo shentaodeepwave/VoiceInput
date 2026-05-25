@@ -1,8 +1,6 @@
 import time
-import threading
 from enum import Enum, auto
 
-import pyperclip
 import keyboard as kb
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QPoint
 from PySide6.QtGui import QPainter, QColor, QBrush, QPixmap, QIcon
@@ -74,6 +72,7 @@ class VoiceInputApp(QObject):
         # System tray
         self._tray = QSystemTrayIcon(_make_tray_icon(False))
         self._tray.setToolTip("VoiceInput — 语音输入法")
+        self._tray_menu = None
         self._rebuild_tray_menu()
         self._tray.show()
 
@@ -81,7 +80,7 @@ class VoiceInputApp(QObject):
         self._bind_hotkey()
 
         # Show window on startup
-        self._window = FloatingCardWindow(self._config.data.hotkey)
+        self._window = FloatingCardWindow(self._config.data.hotkey, self._config.data.tap_mode)
         self._window.mic_clicked.connect(self._bridge.toggle.emit)
         self._window.closed.connect(self._on_window_closed)
         self._window.destroyed.connect(lambda: setattr(self, "_window", None))
@@ -136,11 +135,11 @@ class VoiceInputApp(QObject):
             return
 
         if self._config.data.tap_mode:
-            hid = kb.add_hotkey(hotkey, self._on_hotkey_trigger, suppress=False)
+            hid = kb.add_hotkey(hotkey, self._on_hotkey_trigger, suppress=True)
             self._hotkey_ids = [("add_hotkey", hid)]
         else:
-            hid1 = kb.on_press(self._on_hold_press, suppress=False)
-            hid2 = kb.on_release(self._on_hold_release, suppress=False)
+            hid1 = kb.on_press(self._on_hold_press, suppress=True)
+            hid2 = kb.on_release(self._on_hold_release, suppress=True)
             self._hotkey_ids = [("on_press", hid1), ("on_release", hid2)]
 
     def _unbind_hotkey(self):
@@ -168,7 +167,7 @@ class VoiceInputApp(QObject):
     # ── State Machine ───────────────────────────────────────────
     def _on_toggle(self):
         now = time.time()
-        if now - self._last_toggle_ts < 0.4:
+        if self._config.data.tap_mode and now - self._last_toggle_ts < 0.4:
             return
         self._last_toggle_ts = now
 
@@ -334,27 +333,7 @@ class VoiceInputApp(QObject):
     # ── Typing ──────────────────────────────────────────────────
     @staticmethod
     def _type_text(text: str):
-        import ctypes
-        from ctypes import wintypes
-
-        old = pyperclip.paste()
-        pyperclip.copy(text)
-        time.sleep(0.05)
-
-        VK_CONTROL = 0x11
-        VK_V = 0x56
-        KEYEVENTF_KEYUP = 0x0002
-
-        user32 = ctypes.windll.user32
-        user32.keybd_event(VK_CONTROL, 0, 0, 0)
-        user32.keybd_event(VK_V, 0, 0, 0)
-        user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
-        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-
-        def restore():
-            time.sleep(0.3)
-            pyperclip.copy(old)
-        threading.Thread(target=restore, daemon=True).start()
+        kb.write(text, delay=0.005)
 
     # ── Window ──────────────────────────────────────────────────
     def _place_window(self):
@@ -398,29 +377,29 @@ class VoiceInputApp(QObject):
 
     # ── System Tray ─────────────────────────────────────────────
     def _rebuild_tray_menu(self):
-        menu = QMenu()
-        if self._state == State.RECORDING:
-            menu.addAction("停止录音", self._bridge.toggle.emit)
+        if self._tray_menu is None:
+            self._tray_menu = QMenu()
         else:
-            menu.addAction("开始录音", self._bridge.toggle.emit)
-        menu.addSeparator()
-        menu.addAction("设置...", self._show_settings)
-        menu.addSeparator()
-        menu.addAction("关闭程序", self._quit)
-        self._tray.setContextMenu(menu)
+            self._tray_menu.clear()
+
+        if self._state == State.RECORDING:
+            self._tray_menu.addAction("停止录音", self._bridge.toggle.emit)
+        else:
+            self._tray_menu.addAction("开始录音", self._bridge.toggle.emit)
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("设置...", self._show_settings)
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("关闭程序", self._quit)
+        self._tray.setContextMenu(self._tray_menu)
 
     # ── Settings ────────────────────────────────────────────────
     def _show_settings(self):
-        was_recording = self._state == State.RECORDING
-        if was_recording:
-            self._stop_recording()
-
         dlg = SettingsDialog(self._config)
         if dlg.exec() == SettingsDialog.Accepted:
             self._engine = ASREngine(self._config.data)
             self.rebind_hotkey()
             if self._window:
-                self._window.set_hotkey_label(self._config.data.hotkey)
+                self._window.set_placeholder(self._config.data.hotkey, self._config.data.tap_mode)
 
     # ── Quit ────────────────────────────────────────────────────
     def _quit(self):

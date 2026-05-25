@@ -14,10 +14,10 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("VoiceInput")
 
-    # Timer to let Python process signals
-    timer = QTimer()
-    timer.timeout.connect(lambda: None)
-    timer.start(200)
+    # Timer to let Python process signals — store on app to prevent GC
+    app._signal_timer = QTimer()
+    app._signal_timer.timeout.connect(lambda: None)
+    app._signal_timer.start(200)
 
     VoiceInputApp()
     sys.exit(app.exec())

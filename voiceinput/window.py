@@ -1,16 +1,185 @@
 from PySide6.QtCore import Qt, Signal, QPoint, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QMouseEvent, QPalette
+from PySide6.QtGui import QMouseEvent, QPalette, QColor, QPainter, QPainterPath, QBrush, QPen, QTextOption
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QApplication, QTextEdit, QFrame,
+    QApplication, QTextEdit, QFrame, QGraphicsDropShadowEffect,
 )
+
+
+class _PlaceholderTextEdit(QTextEdit):
+    """QTextEdit with placeholder text support."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._placeholder = ""
+
+    def setPlaceholderText(self, text: str):
+        self._placeholder = text
+        self.viewport().update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._placeholder and not self.toPlainText():
+            p = QPainter(self.viewport())
+            p.setPen(QColor(255, 255, 255, 60))
+            p.setFont(self.font())
+            option = QTextOption()
+            option.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            p.drawText(self.viewport().rect().adjusted(4, 4, 0, 0), self._placeholder, option)
+            p.end()
+
+
+class _MicButton(QPushButton):
+    """Circular mic button with glowing ring animation when recording."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(44, 44)
+        self.setCursor(Qt.PointingHandCursor)
+        self._recording = False
+        self._ring_opacity = 0.0
+        self._ring_timer = QTimer(self)
+        self._ring_timer.timeout.connect(self._ring_tick)
+        self._ring_expanding = True
+
+    def set_recording(self, on: bool):
+        self._recording = on
+        if on:
+            self._ring_opacity = 0.3
+            self._ring_expanding = True
+            self._ring_timer.start(40)
+        else:
+            self._ring_timer.stop()
+            self._ring_opacity = 0.0
+        self.update()
+
+    def _ring_tick(self):
+        step = 0.015
+        if self._ring_expanding:
+            self._ring_opacity += step
+            if self._ring_opacity >= 0.65:
+                self._ring_expanding = False
+        else:
+            self._ring_opacity -= step
+            if self._ring_opacity <= 0.25:
+                self._ring_expanding = True
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+
+        # Glow ring when recording
+        if self._recording and self._ring_opacity > 0.01:
+            ring_r = min(w, h) / 2 + 6
+            gradient = QPainter()
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(124, 143, 255, int(self._ring_opacity * 60))))
+            p.drawEllipse(QPoint(int(cx), int(cy)), int(ring_r), int(ring_r))
+
+        # Button circle
+        if self._recording:
+            bg = QColor("#2a2a35")
+            border_color = QColor("#FF6B6B")
+        else:
+            bg = QColor("#323240")
+            border_color = QColor(255, 255, 255, 25)
+
+        if self.underMouse() and not self._recording:
+            bg = QColor("#3d3d50")
+
+        p.setPen(QPen(border_color, 1.5))
+        p.setBrush(QBrush(bg))
+        r = min(w, h) / 2 - 3
+        p.drawEllipse(QPoint(int(cx), int(cy)), int(r), int(r))
+
+        # Icon
+        p.setPen(Qt.NoPen)
+        icon_color = QColor("#e0e0e0" if not self._recording else "#FF6B6B")
+        p.setBrush(QBrush(icon_color))
+
+        if self._recording:
+            # Stop square
+            sq = 12
+            p.drawRoundedRect(int(cx - sq / 2), int(cy - sq / 2), sq, sq, 3, 3)
+        else:
+            # Microphone: vertical capsule > narrow neck > handle
+            path = QPainterPath()
+            cap_w, cap_h = 9, 14
+            hdl_w, hdl_h = 4, 9
+            top = cy - 9
+            mid_y = top + cap_h
+            bot_y = mid_y + hdl_h
+            r = 3
+
+            # Top capsule
+            path.moveTo(cx - cap_w / 2, top + r)
+            path.arcTo(cx - cap_w / 2, top, cap_w, r * 2, 180, -180)
+            path.lineTo(cx + cap_w / 2, mid_y - r)
+            # Right neck curve — bulge outward
+            path.quadTo(cx + cap_w / 2 + 2, mid_y, cx + hdl_w / 2, mid_y)
+            path.lineTo(cx + hdl_w / 2, bot_y - r)
+            path.arcTo(cx - hdl_w / 2, bot_y - r * 2, hdl_w, r * 2, 0, -180)
+            path.lineTo(cx - hdl_w / 2, mid_y)
+            # Left neck curve — bulge outward
+            path.quadTo(cx - cap_w / 2 - 2, mid_y, cx - cap_w / 2, mid_y - r)
+            path.closeSubpath()
+
+            p.drawPath(path)
+
+        p.end()
+
+
+class _RecordingDot(QLabel):
+    """Pulsing recording indicator."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(8, 8)
+        self._phase = False
+        self._active = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._update_style()
+
+    def start_pulse(self):
+        self._active = True
+        self._phase = False
+        self._update_style()
+        self._timer.start(700)
+
+    def stop_pulse(self):
+        self._active = False
+        self._timer.stop()
+        self._update_style()
+
+    def _tick(self):
+        self._phase = not self._phase
+        self._update_style()
+
+    def _update_style(self):
+        if not self._active:
+            color = "#555560"
+        elif self._phase:
+            color = "#FF6B6B"
+        else:
+            color = "rgba(255, 107, 107, 0.25)"
+        self.setStyleSheet(f"""
+            QLabel {{
+                background: {color};
+                border-radius: 4px;
+            }}
+        """)
 
 
 class FloatingCardWindow(QWidget):
     mic_clicked = Signal()
     closed = Signal()
 
-    def __init__(self, hotkey_label: str = "F2"):
+    def __init__(self, hotkey: str = "F2", is_tap_mode: bool = True):
         super().__init__()
         self.setWindowFlags(
             Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Tool
@@ -18,16 +187,16 @@ class FloatingCardWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setFixedSize(400, 250)
+        self.setFixedSize(360, 160)
         self.setWindowOpacity(0.0)
 
         self._drag_pos: QPoint | None = None
         self._recording = False
-        self._hotkey_label = hotkey_label
+        self._hotkey = hotkey
+        self._is_tap_mode = is_tap_mode
 
-        # Fade animation uses native windowOpacity (no graphics effect → no black block)
         self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_anim.setDuration(300)
+        self._fade_anim.setDuration(250)
         self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._setup_ui()
@@ -36,25 +205,53 @@ class FloatingCardWindow(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
+        # Shadow
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(24)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        shadow.setOffset(0, 4)
+
         self._card = QWidget(self)
         self._card.setObjectName("card")
+        self._card.setGraphicsEffect(shadow)
         self._card.setStyleSheet("""
             #card {
-                background: rgba(32, 32, 32, 0.94);
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.07);
+                background: rgba(24, 24, 32, 0.96);
+                border-radius: 14px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
             }
         """)
         outer.addWidget(self._card)
 
         layout = QVBoxLayout(self._card)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(0)
+        layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(8)
 
-        # Text area — QTextEdit with transparent viewport
-        self._text_edit = QTextEdit()
+        # Header row: label + recording dot
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        self._title_label = QLabel("VoiceInput")
+        self._title_label.setStyleSheet("""
+            QLabel {
+                color: rgba(255, 255, 255, 0.35);
+                font-size: 11px;
+                font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            }
+        """)
+
+        self._status_dot = _RecordingDot()
+
+        header.addWidget(self._title_label)
+        header.addStretch()
+        header.addWidget(self._status_dot, alignment=Qt.AlignVCenter)
+        layout.addLayout(header)
+
+        # Text area
+        self._text_edit = _PlaceholderTextEdit()
         self._text_edit.setReadOnly(True)
-        self._text_edit.setFixedHeight(64)
+        self._text_edit.setFixedHeight(32)
         self._text_edit.setFrameShape(QFrame.NoFrame)
         self._text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._text_edit.setAutoFillBackground(False)
@@ -67,78 +264,35 @@ class FloatingCardWindow(QWidget):
 
         layout.addStretch()
 
-        # Bottom bar: status dot + mic button, right-aligned
+        # Bottom bar
         bottom = QHBoxLayout()
-        bottom.setContentsMargins(0, 0, 4, 0)
-        bottom.setSpacing(12)
+        bottom.setContentsMargins(0, 0, 2, 0)
+        bottom.setSpacing(8)
         bottom.addStretch()
 
-        # Recording indicator dot
-        self._status_dot = QLabel()
-        self._status_dot.setFixedSize(10, 10)
-        self._status_dot.setStyleSheet("""
-            QLabel {
-                background: #555555;
-                border-radius: 5px;
-            }
-        """)
-        bottom.addWidget(self._status_dot, alignment=Qt.AlignVCenter)
-
-        # Mic button
-        self._mic_btn = QPushButton()
-        self._mic_btn.setFixedSize(44, 44)
-        self._mic_btn.setCursor(Qt.PointingHandCursor)
+        self._mic_btn = _MicButton()
         self._mic_btn.clicked.connect(self.mic_clicked.emit)
-        self._apply_mic_style(False)
         bottom.addWidget(self._mic_btn, alignment=Qt.AlignVCenter)
 
         layout.addLayout(bottom)
 
         self._apply_text_style("normal")
-
-        # Dot pulse timer
-        self._dot_pulse_timer = QTimer(self)
-        self._dot_pulse_timer.timeout.connect(self._dot_tick)
-        self._dot_phase = False
+        self._update_placeholder()
 
     def _apply_text_style(self, mode: str):
-        color = "#F44336" if mode == "error" else "#e4e4e4"
+        color = "#FF6B6B" if mode == "error" else "#d4d4dc"
         self._text_edit.setStyleSheet(f"""
             QTextEdit {{
                 color: {color};
-                font-size: 14px;
+                font-size: 15px;
+                font-weight: 350;
                 font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei', sans-serif;
                 background: transparent;
-                padding: 4px 0;
+                padding: 2px 0;
                 border: none;
-                selection-background-color: rgba(96, 205, 255, 0.4);
+                selection-background-color: rgba(124, 143, 255, 0.3);
             }}
         """)
-
-    def _apply_mic_style(self, recording: bool):
-        if recording:
-            bg = "#202020"
-            icon = "⏹"  # stop square
-            border = "1px solid #555555"
-        else:
-            bg = "#3a3a3a"
-            icon = "\U0001F3A4"  # mic
-            border = "1px solid transparent"
-
-        self._mic_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {bg};
-                border-radius: 22px;
-                border: {border};
-                color: #cccccc;
-                font-size: 17px;
-            }}
-            QPushButton:hover {{
-                background: {bg};
-                border-color: #777777;
-            }}
-        """)
-        self._mic_btn.setText(icon)
 
     # ── Public API ──────────────────────────────────────────────
     def show_with_fade(self):
@@ -165,16 +319,38 @@ class FloatingCardWindow(QWidget):
         cursor.movePosition(cursor.End)
         self._text_edit.setTextCursor(cursor)
 
-    def set_hotkey_label(self, key: str):
-        self._hotkey_label = key
+    def set_placeholder(self, hotkey: str, is_tap_mode: bool):
+        self._hotkey = hotkey
+        self._is_tap_mode = is_tap_mode
+        self._update_placeholder()
+
+    def _update_placeholder(self):
+        action = "\u70B9\u6309" if self._is_tap_mode else "\u6309\u4F4F"
+        self._text_edit.setPlaceholderText(
+            f"{action} {self._hotkey} \u5F00\u59CB\u5F55\u97F3"
+        )
 
     def set_recording(self, on: bool):
         self._recording = on
-        self._apply_mic_style(on)
+        self._mic_btn.set_recording(on)
         if on:
-            self._start_dot_pulse()
+            self._status_dot.start_pulse()
+            self._card.setStyleSheet("""
+                #card {
+                    background: rgba(24, 24, 32, 0.96);
+                    border-radius: 14px;
+                    border: 1px solid rgba(124, 143, 255, 0.18);
+                }
+            """)
         else:
-            self._stop_dot_pulse()
+            self._status_dot.stop_pulse()
+            self._card.setStyleSheet("""
+                #card {
+                    background: rgba(24, 24, 32, 0.96);
+                    border-radius: 14px;
+                    border: 1px solid rgba(255, 255, 255, 0.06);
+                }
+            """)
 
     def set_error(self, text: str):
         self._apply_text_style("error")
@@ -182,46 +358,6 @@ class FloatingCardWindow(QWidget):
 
     def clear_error(self):
         self._apply_text_style("normal")
-
-    # ── Status dot pulse ────────────────────────────────────────
-    def _start_dot_pulse(self):
-        self._status_dot.setStyleSheet("""
-            QLabel {
-                background: #FF4444;
-                border-radius: 5px;
-            }
-        """)
-        self._dot_phase = False
-        self._dot_pulse_timer.start(800)
-
-    def _stop_dot_pulse(self):
-        self._dot_pulse_timer.stop()
-        self._status_dot.setStyleSheet("""
-            QLabel {
-                background: #555555;
-                border-radius: 5px;
-            }
-        """)
-
-    def _dot_tick(self):
-        if not self._recording:
-            self._stop_dot_pulse()
-            return
-        self._dot_phase = not self._dot_phase
-        if self._dot_phase:
-            self._status_dot.setStyleSheet("""
-                QLabel {
-                    background: #FF4444;
-                    border-radius: 5px;
-                }
-            """)
-        else:
-            self._status_dot.setStyleSheet("""
-                QLabel {
-                    background: rgba(255, 68, 68, 0.2);
-                    border-radius: 5px;
-                }
-            """)
 
     # ── Drag ────────────────────────────────────────────────────
     def mousePressEvent(self, e: QMouseEvent):
@@ -238,6 +374,6 @@ class FloatingCardWindow(QWidget):
         self._drag_pos = None
 
     def closeEvent(self, e):
-        self._stop_dot_pulse()
+        self._status_dot.stop_pulse()
         self.closed.emit()
         super().closeEvent(e)
